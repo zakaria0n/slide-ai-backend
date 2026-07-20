@@ -47,6 +47,11 @@ def client(tmp_path) -> TestClient:
 
 async def _ensure_schema(engine) -> None:
     from app.db.base import Base
+    # Ensure all models are registered so create_all picks them up.
+    import app.models.presentation  # noqa: F401
+    import app.models.slide  # noqa: F401
+    import app.models.file_asset  # noqa: F401
+    import app.models.presentation_version  # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -289,3 +294,61 @@ def test_ai_edit_owner_scoped(client: TestClient) -> None:
         headers=_auth(_token(intruder)),
     )
     assert res.status_code == 404
+
+
+def test_version_created_on_spec_update(client: TestClient) -> None:
+    uid = "eeee5555-5555-5555-5555-555555555555"
+    headers = _auth(_token(uid))
+
+    gen = client.post(
+        "/api/v1/presentations/generate",
+        json={"prompt": "version test", "slide_count": 2},
+        headers=headers,
+    ).json()
+    pid = gen["id"]
+
+    # Update spec to trigger a version snapshot.
+    spec = client.get(f"/api/v1/presentations/{pid}/spec", headers=headers).json()
+    spec["slides"][0]["elements"][0]["text"] = "Changed Title"
+    client.put(f"/api/v1/presentations/{pid}/spec", json=spec, headers=headers)
+
+    # List versions.
+    vlist = client.get(f"/api/v1/presentations/{pid}/versions", headers=headers)
+    assert vlist.status_code == 200
+    assert vlist.json()["total"] >= 1
+    vid = vlist.json()["versions"][0]["id"]
+
+    # Get specific version with spec.
+    vdetail = client.get(f"/api/v1/presentations/{pid}/versions/{vid}", headers=headers)
+    assert vdetail.status_code == 200
+    assert vdetail.json()["spec"]["slides"][0]["elements"][0]["text"] == "Version test"
+
+
+def test_version_restore(client: TestClient) -> None:
+    uid = "ffff5555-5555-5555-5555-555555555555"
+    headers = _auth(_token(uid))
+
+    gen = client.post(
+        "/api/v1/presentations/generate",
+        json={"prompt": "restore test", "slide_count": 2},
+        headers=headers,
+    ).json()
+    pid = gen["id"]
+
+    # Modify spec.
+    spec = client.get(f"/api/v1/presentations/{pid}/spec", headers=headers).json()
+    spec["slides"][0]["elements"][0]["text"] = "Modified"
+    client.put(f"/api/v1/presentations/{pid}/spec", json=spec, headers=headers)
+
+    # Get the first version (original).
+    vlist = client.get(f"/api/v1/presentations/{pid}/versions", headers=headers).json()
+    vid = vlist["versions"][0]["id"]
+
+    # Restore to original.
+    restored = client.post(
+        f"/api/v1/presentations/{pid}/versions/{vid}/restore",
+        headers=headers,
+    )
+    assert restored.status_code == 200
+    # Spec should have the original title.
+    assert restored.json()["slides"][0]["elements"][0]["text"] == "Restore test"

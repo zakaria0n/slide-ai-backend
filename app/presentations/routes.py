@@ -276,6 +276,9 @@ async def update_presentation_spec(
         )
         if presentation is None:
             raise NotFoundError("Presentation not found")
+        from app.presentations.versioning import snapshot_if_changed
+        old_spec = PresentationSpec.model_validate(presentation.spec)
+        await snapshot_if_changed(session, presentation_id, owner_id, old_spec, note="manual edit")
         presentation.spec = spec.model_dump()
         presentation.slide_count = len(spec.slides)
         session.add(presentation)
@@ -330,6 +333,9 @@ async def ai_edit_presentation(
             current_spec, req.instruction, req.target_indexes
         )
 
+        from app.presentations.versioning import snapshot_if_changed
+        await snapshot_if_changed(session, presentation_id, owner_id, current_spec, note=f"before: {req.instruction}")
+
         presentation.spec = result.modified_spec.model_dump()
         presentation.slide_count = len(result.modified_spec.slides)
         session.add(presentation)
@@ -345,6 +351,126 @@ async def ai_edit_presentation(
         summary=result.summary,
         changed_indexes=result.changed_indexes,
     )
+
+
+# --- version history ---
+
+
+class VersionResponse(BaseModel):
+    id: str
+    presentation_id: str
+    version_note: str | None
+    slide_count: int
+    created_at: str
+    spec: PresentationSpec | None = None
+
+
+class VersionListResponse(BaseModel):
+    versions: list[VersionResponse]
+    total: int
+
+
+@router.get("/{presentation_id}/versions", response_model=VersionListResponse)
+async def list_versions(
+    presentation_id: UUID,
+    owner_id: UUID = Depends(_owner_id),
+    db: Database = Depends(_db),
+) -> VersionListResponse:
+    """List version history for a presentation."""
+    from app.db.repositories.presentation_version import PresentationVersionRepository
+
+    session = db.session_factory()
+    try:
+        presentation = await PresentationRepository(session).get_owned(presentation_id, owner_id)
+        if presentation is None:
+            raise NotFoundError("Presentation not found")
+        versions = await PresentationVersionRepository(session).list_for_presentation(presentation_id)
+    finally:
+        await session.close()
+
+    return VersionListResponse(
+        versions=[
+            VersionResponse(
+                id=str(v.id),
+                presentation_id=str(v.presentation_id),
+                version_note=v.version_note,
+                slide_count=v.slide_count,
+                created_at=v.created_at.isoformat(),
+            )
+            for v in versions
+        ],
+        total=len(versions),
+    )
+
+
+@router.get("/{presentation_id}/versions/{version_id}", response_model=VersionResponse)
+async def get_version(
+    presentation_id: UUID,
+    version_id: UUID,
+    owner_id: UUID = Depends(_owner_id),
+    db: Database = Depends(_db),
+) -> VersionResponse:
+    """Get a specific version snapshot with full spec."""
+    from app.db.repositories.presentation_version import PresentationVersionRepository
+
+    session = db.session_factory()
+    try:
+        presentation = await PresentationRepository(session).get_owned(presentation_id, owner_id)
+        if presentation is None:
+            raise NotFoundError("Presentation not found")
+        version = await PresentationVersionRepository(session).get_owned(version_id, owner_id)
+        if version is None:
+            raise NotFoundError("Version not found")
+    finally:
+        await session.close()
+
+    return VersionResponse(
+        id=str(version.id),
+        presentation_id=str(version.presentation_id),
+        version_note=version.version_note,
+        slide_count=version.slide_count,
+        created_at=version.created_at.isoformat(),
+        spec=PresentationSpec.model_validate(version.spec),
+    )
+
+
+@router.post("/{presentation_id}/versions/{version_id}/restore", response_model=PresentationSpec)
+async def restore_version(
+    presentation_id: UUID,
+    version_id: UUID,
+    owner_id: UUID = Depends(_owner_id),
+    db: Database = Depends(_db),
+) -> PresentationSpec:
+    """Restore a presentation to a specific version snapshot."""
+    from app.db.repositories.presentation_version import PresentationVersionRepository
+    from app.presentations.versioning import snapshot_if_changed
+
+    session = db.session_factory()
+    try:
+        presentation = await PresentationRepository(session).get_owned(presentation_id, owner_id)
+        if presentation is None:
+            raise NotFoundError("Presentation not found")
+        version = await PresentationVersionRepository(session).get_owned(version_id, owner_id)
+        if version is None:
+            raise NotFoundError("Version not found")
+
+        old_spec = PresentationSpec.model_validate(presentation.spec)
+        restored_spec = PresentationSpec.model_validate(version.spec)
+
+        # Snapshot current state before restoring.
+        await snapshot_if_changed(session, presentation_id, owner_id, old_spec, note="before restore")
+
+        presentation.spec = restored_spec.model_dump()
+        presentation.slide_count = len(restored_spec.slides)
+        session.add(presentation)
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()
+
+    return restored_spec
 
 
 @router.patch("/{presentation_id}", response_model=PresentationResponse)
