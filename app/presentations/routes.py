@@ -18,6 +18,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.core.config import Settings
@@ -29,6 +30,8 @@ from app.generation.schemas import GenerationRequest
 from app.generation.service import GenerationService
 from app.generation.spec import PresentationSpec
 from app.presentations.entities import Presentation
+from app.export.strategy import ExportFormat
+from app.export.service import ExportService
 from app.presentations.schemas import (
     CreatePresentationRequest,
     PresentationListResponse,
@@ -209,6 +212,41 @@ async def get_presentation_spec(
     if not spec:
         raise NotFoundError("Presentation specification not found")
     return PresentationSpec.model_validate(spec)
+
+
+@router.get("/{presentation_id}/export")
+async def export_presentation(
+    presentation_id: UUID,
+    format: ExportFormat = ExportFormat.HTML,
+    owner_id: UUID = Depends(_owner_id),
+    db: Database = Depends(_db),
+) -> Response:
+    """Export a presentation to HTML / PDF / PPTX.
+
+    - ``html`` returns a self-contained animated HTML file (the primary
+      Slide AI product).
+    - ``pdf`` returns print-optimized static HTML (Save as PDF).
+    - ``pptx`` returns a native PowerPoint file with content only.
+    """
+    session = db.session_factory()
+    try:
+        presentation = await PresentationRepository(session).get_owned(
+            presentation_id, owner_id
+        )
+        if presentation is None:
+            raise NotFoundError("Presentation not found")
+        spec_raw = presentation.spec
+    finally:
+        await session.close()
+    if not spec_raw:
+        raise NotFoundError("Presentation specification not found")
+    spec = PresentationSpec.model_validate(spec_raw)
+    exported = ExportService().export(spec, fmt=format, theme_hint=spec.meta.theme if spec.meta else None)
+    return Response(
+        content=exported.data,
+        media_type=exported.media_type,
+        headers={"Content-Disposition": f'attachment; filename="{exported.filename}"'},
+    )
 
 
 @router.patch("/{presentation_id}", response_model=PresentationResponse)
