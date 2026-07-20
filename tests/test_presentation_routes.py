@@ -142,3 +142,80 @@ def test_owner_cannot_access_others_presentation(client: TestClient) -> None:
     intruder_headers = _auth(_token(intruder))
     res = client.get(f"/api/v1/presentations/{pid}", headers=intruder_headers)
     assert res.status_code == 404
+
+
+def test_update_spec_persists(client: TestClient) -> None:
+    import asyncio
+    from app.generation.spec import PresentationSpec
+    from app.generation.spec_provider import OfflineSpecProvider
+
+    uid = "55555555-5555-5555-5555-555555555555"
+    headers = _auth(_token(uid))
+
+    # Create a presentation with a spec via the generate endpoint.
+    gen = client.post(
+        "/api/v1/presentations/generate",
+        json={"prompt": "test deck", "slide_count": 3},
+        headers=headers,
+    )
+    assert gen.status_code == 201
+    pid = gen.json()["id"]
+
+    # Verify spec exists.
+    spec_res = client.get(f"/api/v1/presentations/{pid}/spec", headers=headers)
+    assert spec_res.status_code == 200
+    original = spec_res.json()
+    assert len(original["slides"]) == 3
+
+    # Update: change the title of the first slide.
+    original["slides"][0]["elements"][0]["text"] = "Updated Title"
+    update = client.put(
+        f"/api/v1/presentations/{pid}/spec",
+        json=original,
+        headers=headers,
+    )
+    assert update.status_code == 200
+    updated = update.json()
+    assert updated["slides"][0]["elements"][0]["text"] == "Updated Title"
+
+    # Re-fetch to confirm persistence.
+    re_fetched = client.get(f"/api/v1/presentations/{pid}/spec", headers=headers)
+    assert re_fetched.json()["slides"][0]["elements"][0]["text"] == "Updated Title"
+
+
+def test_update_spec_owner_scoped(client: TestClient) -> None:
+    owner = "66666666-6666-6666-6666-666666666666"
+    intruder = "77777777-7777-7777-7777-777777777777"
+    headers = _auth(_token(owner))
+
+    gen = client.post(
+        "/api/v1/presentations/generate",
+        json={"prompt": "my deck", "slide_count": 2},
+        headers=headers,
+    ).json()
+    pid = gen["id"]
+
+    spec = client.get(f"/api/v1/presentations/{pid}/spec", headers=headers).json()
+    spec["meta"]["title"] = "Hacked"
+    res = client.put(
+        f"/api/v1/presentations/{pid}/spec",
+        json=spec,
+        headers=_auth(_token(intruder)),
+    )
+    assert res.status_code == 404
+
+
+def test_update_spec_validates(client: TestClient) -> None:
+    uid = "88888888-8888-8888-8888-888888888888"
+    headers = _auth(_token(uid))
+
+    gen = client.post(
+        "/api/v1/presentations/generate",
+        json={"prompt": "x", "slide_count": 2},
+        headers=headers,
+    ).json()
+    pid = gen["id"]
+
+    bad = {"slides": []}  # empty slides
+    res = client.put(f"/api/v1/presentations/{pid}/spec", json=bad, headers=headers)
+    assert res.status_code == 422

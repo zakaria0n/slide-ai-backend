@@ -249,6 +249,40 @@ async def export_presentation(
     )
 
 
+@router.put("/{presentation_id}/spec", response_model=PresentationSpec)
+async def update_presentation_spec(
+    presentation_id: UUID,
+    spec: PresentationSpec,
+    owner_id: UUID = Depends(_owner_id),
+    db: Database = Depends(_db),
+) -> PresentationSpec:
+    """Replace the presentation specification (live editing).
+
+    Accepts a full ``PresentationSpec`` and persists it. The caller is
+    responsible for conflict resolution (last-write-wins).
+    """
+    if not spec.slides:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail="slides required")
+    session = db.session_factory()
+    try:
+        presentation = await PresentationRepository(session).get_owned(
+            presentation_id, owner_id
+        )
+        if presentation is None:
+            raise NotFoundError("Presentation not found")
+        presentation.spec = spec.model_dump()
+        presentation.slide_count = len(spec.slides)
+        session.add(presentation)
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()
+    return spec
+
+
 @router.patch("/{presentation_id}", response_model=PresentationResponse)
 async def rename_presentation(
     presentation_id: UUID,
