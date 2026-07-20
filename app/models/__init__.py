@@ -8,5 +8,6 @@ from __future__ import annotations
 
 from app.models.file_asset import FileAsset
 from app.models.presentation import Presentation  # noqa: F401
+from app.models.slide import Slide
 
-__all__ = ["Presentation", "FileAsset"]
+__all__ = ["Presentation", "FileAsset", "Slide"]
