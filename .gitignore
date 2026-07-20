@@ -24,3 +24,8 @@ env/
 
 # OS
 .DS_Store
+
+# Local databases (SQLite used for local dev / tests)
+*.db
+*.sqlite
+*.sqlite3

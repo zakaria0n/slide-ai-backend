@@ -15,6 +15,7 @@ from app.db.dependencies import Database
 from app.providers.container import Container
 from app.api.routes.health import router as health_router
 from app.api.routes.auth import router as auth_router
+from app.presentations.routes import router as presentations_router
 
 
 logger = get_logger("main")
@@ -94,6 +95,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api_prefix = settings.api_v1_prefix
     app.include_router(health_router, prefix=api_prefix)
     app.include_router(auth_router, prefix=api_prefix)
+    app.include_router(presentations_router, prefix=api_prefix)
 
     @app.get("/", tags=["meta"])
     async def root() -> dict[str, str]:

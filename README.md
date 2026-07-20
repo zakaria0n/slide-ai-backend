@@ -69,8 +69,35 @@ Design:
   ``SupabaseAuthProvider`` wraps Supabase Auth. A ``FakeAuthProvider``
   (in-memory, JWT-signed) is used for offline/dev/tests.
 - ``JWTVerifier`` validates access tokens locally (HS256, Supabase JWT
-  secret) � no network round-trip per request.
+  secret) — no network round-trip per request.
 - The internal auth backend is never exposed in API responses or logs.
+
+## Presentations (Feature 3)
+
+Owner-scoped CRUD for the user's presentations. Every endpoint requires a
+Bearer access token; the owner id is taken from the JWT ``sub`` claim, and
+operations are scoped so a user can never read or mutate another user's
+decks.
+
+Endpoints under ``/api/v1/presentations``:
+
+- ``GET    /``                 list the caller's presentations (newest first)
+- ``POST   /``                 create a draft presentation
+- ``GET    /{id}``             fetch one (owner only)
+- ``PATCH  /{id}``             rename
+- ``POST   /{id}/duplicate``   create an owned copy (``"Copy of …"``)
+- ``DELETE /{id}``             delete (owner only)
+
+Design:
+- Routes delegate to :class:`PresentationService`; the repository layer
+  (``PresentationRepository``) handles only persistence.
+- The ORM model ``Presentation`` stores owner-scoped metadata
+  (``owner_id``, ``title``, ``description``, ``status``, ``theme``,
+  ``slide_count``); slide *content* arrives in a later feature.
+- ``owner_id`` is indexed but intentionally **not** a foreign key: identity
+  lives in the external Supabase auth provider, not in this database.
+- The ``presentations`` table is created by the Alembic migration
+  ``0001_create_presentations``.
 
 ## Internal AI provider
 
