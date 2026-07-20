@@ -1,7 +1,7 @@
 """Health and system status endpoints."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from app.core.config import Settings, get_settings
@@ -15,6 +15,11 @@ class HealthResponse(BaseModel):
     version: str
     environment: str
     provider: str
+
+
+class ReadyResponse(BaseModel):
+    status: str
+    database: str
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -33,3 +38,17 @@ async def health(
         environment=settings.app_env,
         provider=settings.displayed_provider_name,
     )
+
+
+@router.get("/health/ready", response_model=ReadyResponse)
+async def readiness(request: Request) -> ReadyResponse:
+    """Readiness check. Verifies database connectivity."""
+    try:
+        db = request.app.state.db
+        async with db.engine.connect() as conn:
+            from sqlalchemy import text
+            await conn.execute(text("SELECT 1"))
+        db_status = "ok"
+    except Exception:
+        db_status = "unavailable"
+    return ReadyResponse(status="ok" if db_status == "ok" else "degraded", database=db_status)
