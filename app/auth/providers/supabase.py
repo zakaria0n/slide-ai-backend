@@ -38,21 +38,18 @@ class SupabaseAuthProvider(AuthProvider):
         options = {}
         if full_name:
             options["data"] = {"full_name": full_name}
+        credentials: dict[str, object] = {"email": email, "password": password}
+        if options:
+            credentials["options"] = options
         try:
-            resp = await self._client.sign_up(
-                {
-                    "email": email,
-                    "password": password,
-                    **({"options": options} if options else {}),
-                }
-            )
+            resp = await self._client.auth.sign_up(credentials)  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001 - provider boundary
             self._raise_from(exc)
         return self._to_result(resp)
 
     async def sign_in(self, *, email: str, password: str) -> AuthResult:
         try:
-            resp = await self._client.sign_in_with_password(
+            resp = await self._client.auth.sign_in_with_password(  # type: ignore[attr-defined]
                 {"email": email, "password": password}
             )
         except Exception as exc:  # noqa: BLE001 - provider boundary
@@ -61,8 +58,9 @@ class SupabaseAuthProvider(AuthProvider):
 
     async def sign_out(self, *, refresh_token: str | None = None) -> None:
         try:
-            scope = "local"
-            await self._client.sign_out(scope=scope, refresh_token=refresh_token)
+            await self._client.auth.sign_out(  # type: ignore[attr-defined]
+                options={"scope": "local", "refresh_token": refresh_token}
+            )
         except Exception as exc:  # noqa: BLE001 - provider boundary
             # Sign-out is best-effort; a failure must not break the caller.
             if getattr(exc, "status", None) != 404:
@@ -70,7 +68,7 @@ class SupabaseAuthProvider(AuthProvider):
 
     async def get_user(self, *, access_token: str) -> User:
         try:
-            resp = await self._client.get_user(access_token)
+            resp = await self._client.auth.get_user(access_token)  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001 - provider boundary
             self._raise_from(exc, soft=True)
         user = getattr(resp, "user", None)

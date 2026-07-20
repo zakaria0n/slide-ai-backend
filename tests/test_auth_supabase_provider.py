@@ -27,20 +27,27 @@ def _session(access="a", refresh="r", expires_in=3600):
 
 
 def _client(sign_up=None, sign_in=None, sign_out=None, get_user=None):
-    """Build a fake AsyncGoTrueClient-like object."""
+    """Build a fake AsyncClient-like object (auth lives under ``.auth``)."""
 
-    class FakeClient:
+    class FakeAuth:
         async def sign_up(self, payload):
             return sign_up(payload)
 
         async def sign_in_with_password(self, payload):
             return sign_in(payload)
 
-        async def sign_out(self, scope="local", refresh_token=None):
-            return sign_out(scope, refresh_token) if sign_out else None
+        async def sign_out(self, options=None):
+            if sign_out:
+                scope = options.get("scope") if options else "local"
+                refresh_token = options.get("refresh_token") if options else None
+                return sign_out(scope, refresh_token)
+            return None
 
         async def get_user(self, token):
             return get_user(token)
+
+    class FakeClient:
+        auth = FakeAuth()
 
     return FakeClient()
 

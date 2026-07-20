@@ -6,6 +6,7 @@ every table via ``Base.metadata``.
 """
 from __future__ import annotations
 
+from app.models.file_asset import FileAsset
 from app.models.presentation import Presentation  # noqa: F401
 
-__all__ = ["Presentation"]
+__all__ = ["Presentation", "FileAsset"]
