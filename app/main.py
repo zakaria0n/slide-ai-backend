@@ -17,6 +17,7 @@ from app.api.routes.health import router as health_router
 from app.api.routes.auth import router as auth_router
 from app.presentations.routes import router as presentations_router
 from app.files.routes import router as files_router
+from app.assets.routes import router as assets_router
 
 
 logger = get_logger("main")
@@ -126,6 +127,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(auth_router, prefix=api_prefix)
     app.include_router(presentations_router, prefix=api_prefix)
     app.include_router(files_router, prefix=api_prefix)
+    app.include_router(assets_router, prefix=api_prefix)
 
     @app.get("/", tags=["meta"])
     async def root() -> dict[str, str]:
