@@ -219,3 +219,73 @@ def test_update_spec_validates(client: TestClient) -> None:
     bad = {"slides": []}  # empty slides
     res = client.put(f"/api/v1/presentations/{pid}/spec", json=bad, headers=headers)
     assert res.status_code == 422
+
+
+def test_ai_edit_changes_theme(client: TestClient) -> None:
+    uid = "aaaa5555-5555-5555-5555-555555555555"
+    headers = _auth(_token(uid))
+
+    gen = client.post(
+        "/api/v1/presentations/generate",
+        json={"prompt": "test deck", "slide_count": 3},
+        headers=headers,
+    ).json()
+    pid = gen["id"]
+
+    # AI edit: change theme.
+    res = client.post(
+        f"/api/v1/presentations/{pid}/edit",
+        json={"instruction": "make it modern"},
+        headers=headers,
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert "spec" in body
+    assert "summary" in body
+    assert "changed_indexes" in body
+    assert "modern" in body["summary"].lower()
+    assert body["spec"]["meta"]["theme"] == "modern"
+
+    # Persisted.
+    re_fetched = client.get(f"/api/v1/presentations/{pid}/spec", headers=headers)
+    assert re_fetched.json()["meta"]["theme"] == "modern"
+
+
+def test_ai_edit_reduces_text(client: TestClient) -> None:
+    uid = "bbbb5555-5555-5555-5555-555555555555"
+    headers = _auth(_token(uid))
+
+    gen = client.post(
+        "/api/v1/presentations/generate",
+        json={"prompt": "detailed presentation", "slide_count": 2},
+        headers=headers,
+    ).json()
+    pid = gen["id"]
+
+    res = client.post(
+        f"/api/v1/presentations/{pid}/edit",
+        json={"instruction": "reduce text"},
+        headers=headers,
+    )
+    assert res.status_code == 200
+    assert "reduce" in res.json()["summary"].lower()
+
+
+def test_ai_edit_owner_scoped(client: TestClient) -> None:
+    owner = "cccc5555-5555-5555-5555-555555555555"
+    intruder = "dddd5555-5555-5555-5555-555555555555"
+    headers = _auth(_token(owner))
+
+    gen = client.post(
+        "/api/v1/presentations/generate",
+        json={"prompt": "my deck", "slide_count": 2},
+        headers=headers,
+    ).json()
+    pid = gen["id"]
+
+    res = client.post(
+        f"/api/v1/presentations/{pid}/edit",
+        json={"instruction": "make it modern"},
+        headers=_auth(_token(intruder)),
+    )
+    assert res.status_code == 404

@@ -6,6 +6,10 @@ Endpoints (all owner-scoped, require a Bearer access token):
 - ``POST   /presentations/generate``        generate a new deck end-to-end
 - ``GET    /presentations/{id}``            fetch one (owner only)
 - ``GET    /presentations/{id}/slides``     fetch the ordered slides (owner only)
+- ``GET    /presentations/{id}/spec``       fetch the structured spec (owner only)
+- ``PUT    /presentations/{id}/spec``       update the structured spec (owner only)
+- ``POST   /presentations/{id}/edit``       AI-driven spec edit (owner only)
+- ``GET    /presentations/{id}/export``    export to HTML/PDF/PPTX (owner only)
 - ``PATCH  /presentations/{id}``            rename
 - ``POST   /presentations/{id}/duplicate``  create an owned copy
 - ``DELETE /presentations/{id}``            delete (owner only)
@@ -20,6 +24,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel, Field
 
 from app.core.config import Settings
 from app.core.exceptions import NotFoundError, UnauthorizedError
@@ -281,6 +286,65 @@ async def update_presentation_spec(
     finally:
         await session.close()
     return spec
+
+
+class SpecEditRequest(BaseModel):
+    instruction: str
+    target_indexes: list[int] | None = Field(default=None)
+
+
+class SpecEditResponse(BaseModel):
+    spec: PresentationSpec
+    summary: str
+    changed_indexes: list[int]
+
+
+@router.post("/{presentation_id}/edit", response_model=SpecEditResponse)
+async def ai_edit_presentation(
+    presentation_id: UUID,
+    req: SpecEditRequest,
+    request: Request,
+    owner_id: UUID = Depends(_owner_id),
+    db: Database = Depends(_db),
+) -> SpecEditResponse:
+    """AI-driven spec editing.
+
+    Takes an instruction (e.g. 'make it modern', 'reduce text') and applies
+    it to the current spec. Only affected slides are modified.
+    """
+    from app.generation.spec_editor import SpecEditResult, build_spec_edit_provider
+
+    settings: Settings = request.app.state.settings
+    provider = build_spec_edit_provider(settings)
+
+    session = db.session_factory()
+    try:
+        presentation = await PresentationRepository(session).get_owned(
+            presentation_id, owner_id
+        )
+        if presentation is None:
+            raise NotFoundError("Presentation not found")
+        current_spec = PresentationSpec.model_validate(presentation.spec)
+
+        result: SpecEditResult = await provider.edit_spec(
+            current_spec, req.instruction, req.target_indexes
+        )
+
+        presentation.spec = result.modified_spec.model_dump()
+        presentation.slide_count = len(result.modified_spec.slides)
+        session.add(presentation)
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()
+
+    return SpecEditResponse(
+        spec=result.modified_spec,
+        summary=result.summary,
+        changed_indexes=result.changed_indexes,
+    )
 
 
 @router.patch("/{presentation_id}", response_model=PresentationResponse)
