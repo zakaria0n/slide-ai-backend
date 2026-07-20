@@ -52,3 +52,13 @@ class PresentationRepository(SqlAlchemyRepository[Presentation]):
         )
         result = await self._session.execute(stmt)
         return int(result.scalar_one())
+
+    async def get_owned(self, presentation_id: UUID, owner_id: UUID) -> Presentation | None:
+        """Return the ORM model if it exists and is owned by ``owner_id``."""
+        stmt = (
+            select(Presentation)
+            .where(Presentation.id == presentation_id)
+            .where(Presentation.owner_id == owner_id)
+        )
+        result = await self._session.execute(stmt)
+        return result.scalars().first()

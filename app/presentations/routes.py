@@ -21,11 +21,13 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.core.config import Settings
-from app.core.exceptions import UnauthorizedError
+from app.core.exceptions import NotFoundError, UnauthorizedError
 from app.db.dependencies import Database
+from app.db.repositories.presentation import PresentationRepository
 from app.db.repositories.slide import SlideRepository
 from app.generation.schemas import GenerationRequest
 from app.generation.service import GenerationService
+from app.generation.spec import PresentationSpec
 from app.presentations.entities import Presentation
 from app.presentations.schemas import (
     CreatePresentationRequest,
@@ -98,10 +100,10 @@ async def _generation_service(
     db: Database = Depends(_db),
 ) -> GenerationService:
     """Yield a generation service committed on success."""
-    from app.generation.provider import build_generation_provider
+    from app.generation.spec_provider import build_spec_provider
 
     settings: Settings = request.app.state.settings
-    provider = build_generation_provider(settings)
+    provider = build_spec_provider(settings)
     session = db.session_factory()
     try:
         yield GenerationService(session, provider=provider)
@@ -185,6 +187,28 @@ async def get_presentation_slides(
     finally:
         await session.close()
     return [SlideResponse.from_content(s.slide_index, s.content) for s in slides]
+
+
+@router.get("/{presentation_id}/spec", response_model=PresentationSpec)
+async def get_presentation_spec(
+    presentation_id: UUID,
+    owner_id: UUID = Depends(_owner_id),
+    db: Database = Depends(_db),
+) -> PresentationSpec:
+    """Return the full structured specification for a presentation."""
+    session = db.session_factory()
+    try:
+        presentation = await PresentationRepository(session).get_owned(
+            presentation_id, owner_id
+        )
+        if presentation is None:
+            raise NotFoundError("Presentation not found")
+        spec = presentation.spec
+    finally:
+        await session.close()
+    if not spec:
+        raise NotFoundError("Presentation specification not found")
+    return PresentationSpec.model_validate(spec)
 
 
 @router.patch("/{presentation_id}", response_model=PresentationResponse)

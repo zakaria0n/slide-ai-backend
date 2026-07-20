@@ -117,3 +117,41 @@ def test_slides_are_owner_scoped(client: TestClient) -> None:
     intruder_headers = _auth(_token(intruder))
     res = client.get(f"/api/v1/presentations/{pid}/slides", headers=intruder_headers)
     assert res.status_code == 404
+
+
+def test_spec_endpoint_returns_structured_spec(client: TestClient) -> None:
+    uid = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    headers = _auth(_token(uid))
+
+    pid = client.post(
+        "/api/v1/presentations/generate",
+        json={"prompt": "Investor pitch for a fintech app", "slide_count": 5},
+        headers=headers,
+    ).json()["id"]
+
+    res = client.get(f"/api/v1/presentations/{pid}/spec", headers=headers)
+    assert res.status_code == 200, res.text
+    spec = res.json()
+    assert "meta" in spec
+    assert "slides" in spec
+    assert len(spec["slides"]) == 5
+    # Each slide has a known layout and a non-empty element list.
+    layouts = {s["layout"] for s in spec["slides"]}
+    assert layouts
+    for slide in spec["slides"]:
+        assert isinstance(slide["elements"], list)
+        assert slide["elements"]
+
+
+def test_spec_is_owner_scoped(client: TestClient) -> None:
+    owner = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+    intruder = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+    owner_headers = _auth(_token(owner))
+    pid = client.post(
+        "/api/v1/presentations/generate",
+        json={"prompt": "Onboarding", "slide_count": 3},
+        headers=owner_headers,
+    ).json()["id"]
+    intruder_headers = _auth(_token(intruder))
+    res = client.get(f"/api/v1/presentations/{pid}/spec", headers=intruder_headers)
+    assert res.status_code == 404

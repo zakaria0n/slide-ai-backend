@@ -1,13 +1,17 @@
 """Presentation generation orchestration.
 
 :class:`GenerationService` ties together the stored presentation, the
-generation provider, and the slide repository:
+specification provider, and the slide repository:
 
 1. create a draft presentation owned by the caller,
-2. ask the provider for slides (always "Slide AI" to the caller),
-3. persist each slide, then mark the deck ready with its slide count.
+2. ask the spec provider (always "Slide AI" to the caller) for a structured
+   :class:`PresentationSpec`,
+3. persist the spec on the presentation and each slide's content, then mark
+   the deck ready with its slide count.
 
-Failures roll back: a failed generation leaves no half-written deck.
+Failures roll back: a failed generation leaves no half-written deck. The
+legacy ``SlideResponse`` (title/bullets/notes) is derived from the spec so
+existing consumers keep working.
 """
 from __future__ import annotations
 
@@ -19,8 +23,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import ProviderError, ValidationError
 from app.db.repositories.presentation import PresentationRepository
 from app.db.repositories.slide import SlideRepository
-from app.generation.provider import GenerationProvider
-from app.generation.schemas import GenerationRequest, GenerationResult
+from app.generation.schemas import GenerationRequest
+from app.generation.spec import SlideSpec
+from app.generation.spec_provider import SpecProvider
 from app.models.presentation import Presentation as PresentationModel
 from app.models.slide import Slide
 
@@ -32,7 +37,7 @@ class GenerationService:
         self,
         session: AsyncSession,
         *,
-        provider: GenerationProvider,
+        provider: SpecProvider,
     ) -> None:
         self._presentations = PresentationRepository(session)
         self._slides = SlideRepository(session)
@@ -56,30 +61,34 @@ class GenerationService:
         )
         presentation = await self._presentations.add(presentation)
 
-        # 2. Generate slides from the provider.
+        # 2. Generate the structured specification from the provider.
         try:
-            result = await self._provider.generate(request)
+            spec = await self._provider.generate_spec(request)
         except ProviderError:
             # Roll back the draft so we don't leave a stuck "generating" deck.
             await self._presentations.delete(presentation)
             raise
 
-        # 3. Persist slides and finalize the deck.
-        await self._store_slides(presentation.id, owner_id, result)
-        presentation.slide_count = len(result.slides)
+        # 3. Persist the spec + slides and finalize the deck.
+        await self._store_spec(presentation, spec, owner_id)
+        presentation.slide_count = len(spec.slides)
         presentation.status = "ready"
+        presentation.spec = spec.model_dump()
         saved = await self._presentations.update(presentation)
         return saved
 
-    async def _store_slides(
-        self, presentation_id: UUID, owner_id: UUID, result: GenerationResult
+    async def _store_spec(
+        self, presentation: PresentationModel, spec: object, owner_id: UUID
     ) -> None:
-        for index, slide in enumerate(result.slides):
+        from app.generation.spec import PresentationSpec
+
+        typed = spec if isinstance(spec, PresentationSpec) else PresentationSpec.model_validate(spec)
+        for index, slide in enumerate(typed.slides):
             row = Slide(
-                presentation_id=presentation_id,
+                presentation_id=presentation.id,
                 owner_id=owner_id,
                 slide_index=index,
-                content=json.dumps(slide.model_dump()),
+                content=json.dumps(_slide_to_legacy(slide)),
             )
             await self._slides.add(row)
 
@@ -93,3 +102,21 @@ class GenerationService:
         if len(head) > 200:
             head = head[:197].rstrip() + "..."
         return head
+
+
+def _slide_to_legacy(slide: SlideSpec) -> dict:
+    """Map a spec slide to the legacy Slide content (title/bullets/notes)."""
+    title = ""
+    bullets: list[str] = []
+    notes = slide.notes
+    for el in slide.elements:
+        if getattr(el, "type", None) == "title" and not title:
+            title = getattr(el, "text", "")
+        elif getattr(el, "type", None) == "bullets":
+            bullets.extend(getattr(el, "items", []))
+    return {
+        "title": title,
+        "bullets": bullets,
+        "notes": notes,
+        "layout": slide.layout,
+    }

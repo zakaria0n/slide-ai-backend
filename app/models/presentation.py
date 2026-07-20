@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Integer, String, Text, func
+from sqlalchemy import DateTime, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -39,6 +39,11 @@ class Presentation(Base):
         String(20), default="draft", server_default="draft"
     )
     theme: Mapped[str | None] = mapped_column(String(40), default=None)
+
+    # Full Presentation Specification (structured JSON from the AI engine).
+    # This is the canonical rendering source for the renderer (Phase 8+).
+    # Uses SQLAlchemy's generic JSON type: JSONB on Postgres, TEXT on SQLite.
+    spec: Mapped[dict | None] = mapped_column(JSON, default=None, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, server_default=func.now()
