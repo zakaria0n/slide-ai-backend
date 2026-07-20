@@ -54,6 +54,28 @@ uvicorn app.main:app --reload --port 8000
 pytest
 ```
 
+## Database & Supabase
+
+The application is backed by a real **Supabase** project
+(PostgreSQL + Auth + Storage):
+
+- **Schema** is managed by Alembic. The `presentations` table is created
+  by migration `0001_create_presentations`, and is also provisioned
+  directly in the Supabase project (the table already exists in the
+  hosted database with Row Level Security enabled).
+- **Row Level Security**: `public.presentations` has an `owner_id` column
+  and a policy `presentations_owner_all` that restricts every row to
+  `owner_id = auth.uid()`. The backend enforces the same ownership in
+  application code, so the two layers agree.
+- **Auth**: when `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are set the
+  app uses the `SupabaseAuthProvider` (real Supabase Auth). Otherwise it
+  falls back to an in-memory `FakeAuthProvider` so the app still runs
+  offline / in tests. `SUPABASE_JWT_SECRET` is used to verify access
+  tokens locally (HS256, no network round-trip).
+
+To create the schema in a fresh Supabase project, run `alembic upgrade
+head`, or apply the DDL from the migration by hand.
+
 ## Authentication (Feature 2)
 
 Endpoints under ``/api/v1/auth``:

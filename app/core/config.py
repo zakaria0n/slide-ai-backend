@@ -8,7 +8,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -68,6 +68,22 @@ class Settings(BaseSettings):
         default_factory=lambda: ["deepseek-v4-flash-free"]
     )
     ai_request_timeout_seconds: float = 60.0
+
+    @field_validator("ai_allowed_models", mode="before")
+    @classmethod
+    def _parse_allowed_models(cls, value: object) -> object:
+        """Accept a JSON array or a comma-separated string from the env."""
+        if isinstance(value, str):
+            import json
+
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, list):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+            return [m.strip() for m in value.split(",") if m.strip()]
+        return value
 
     # --- Security ---
     # Supabase uses JWTs signed with the JWT secret for auth. The anon key

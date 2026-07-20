@@ -43,6 +43,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     factory = container.session_factory()
     app.state.db = Database(engine=engine, factory=factory)
 
+    # Wire the Supabase-backed auth provider when configured; otherwise
+    # fall back to the in-memory fake so the app runs offline / in tests.
+    from app.auth.providers.fake import FakeAuthProvider
+    from app.auth.providers.supabase import SupabaseAuthProvider
+
+    _secret = settings.supabase_jwt_secret or "dev-insecure-secret"
+    if settings.supabase_url and settings.supabase_service_role_key:
+        from supabase import AsyncClient, AsyncClientOptions, create_async_client
+
+        supabase_client: AsyncClient = await create_async_client(
+            settings.supabase_url,
+            settings.supabase_service_role_key,
+            options=AsyncClientOptions(auto_refresh_token=False, persist_session=False),
+        )
+        app.state.auth_provider = SupabaseAuthProvider(supabase_client)
+        logger.info("Auth provider: Supabase")
+    else:
+        app.state.auth_provider = FakeAuthProvider(_secret)
+        logger.info("Auth provider: in-memory fake (Supabase not configured)")
+
     # Verify the database accepts connections before serving traffic.
     try:
         async with engine.connect() as conn:
