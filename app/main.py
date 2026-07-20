@@ -14,6 +14,7 @@ from app.core.logging import get_logger, setup_logging
 from app.db.dependencies import Database
 from app.providers.container import Container
 from app.api.routes.health import router as health_router
+from app.api.routes.auth import router as auth_router
 
 
 logger = get_logger("main")
@@ -70,6 +71,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         debug=settings.app_debug,
     )
     app.state.settings = settings
+    # Shared, per-application auth provider (in-memory fake by default;
+    # production wiring swaps this for the Supabase-backed provider).
+    from app.auth.jwt_verifier import JWTVerifier
+    from app.auth.providers.fake import FakeAuthProvider
+    _secret = settings.supabase_jwt_secret or "dev-insecure-secret"
+    app.state.auth_provider = FakeAuthProvider(_secret)
+    app.state.jwt_verifier = JWTVerifier(_secret)
 
     # CORS: restrict to configured origins in production.
     app.add_middleware(
@@ -85,6 +93,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Routers
     api_prefix = settings.api_v1_prefix
     app.include_router(health_router, prefix=api_prefix)
+    app.include_router(auth_router, prefix=api_prefix)
 
     @app.get("/", tags=["meta"])
     async def root() -> dict[str, str]:
