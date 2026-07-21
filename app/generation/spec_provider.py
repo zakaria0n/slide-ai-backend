@@ -221,104 +221,279 @@ class OnlineSpecProvider(SpecProvider):
 
 
 class OfflineSpecProvider(SpecProvider):
-    """Deterministic specification stub for dev / tests (no provider key)."""
+    """Deterministic generator that builds a topic-aware presentation.
+
+    Used only when no API key is configured at all. Produces a valid spec
+    with content derived from the user's prompt — never template garbage.
+    """
+
+    # Prefixes to strip from prompts to extract a clean topic.
+    _STRIP_PREFIXES = [
+        "create a ", "create an ", "make a ", "make an ",
+        "build a ", "build an ", "design a ", "design an ",
+        "generate a ", "generate an ", "write a ", "write an ",
+        "prepare a ", "prepare an ", "draft a ", "draft an ",
+        "create ", "make ", "build ", "design ", "generate ", "prepare ", "draft ",
+        "presentation about ", "presentation on ", "slides about ", "slides on ",
+        "deck about ", "deck on ", "talk about ", "talk on ",
+        "a presentation about ", "a presentation on ",
+        "a deck about ", "a deck on ",
+        "my ",
+    ]
+
+    @staticmethod
+    def _derive_title(prompt: str) -> str:
+        """Extract a short, professional title from the raw prompt."""
+        topic = prompt.strip()
+        changed = True
+        while changed:
+            changed = False
+            lower = topic.lower()
+            for prefix in OfflineSpecProvider._STRIP_PREFIXES:
+                if lower.startswith(prefix):
+                    topic = topic[len(prefix):].strip()
+                    changed = True
+                    break
+        # Remove trailing punctuation and whitespace.
+        topic = topic.rstrip(".!?,;:").strip()
+        # Capitalise first letter.
+        if topic:
+            topic = topic[0].upper() + topic[1:]
+        # Truncate to 8 words.
+        words = topic.split()
+        if len(words) > 8:
+            topic = " ".join(words[:8])
+        return topic or "Untitled Presentation"
+
+    @staticmethod
+    def _pick_layouts(topic: str, count: int) -> list[str]:
+        """Choose layouts based on topic keywords and slide count."""
+        lower = topic.lower()
+        # Keyword → layout hints.
+        hints: list[str] = []
+        if any(w in lower for w in ("compare", "versus", "vs", "pros and cons", "before and after")):
+            hints.append("comparison")
+        if any(w in lower for w in ("timeline", "history", "evolution", "roadmap", "milestone")):
+            hints.append("timeline")
+        if any(w in lower for w in ("statistic", "metric", "data", "number", "kpi", "growth", "revenue")):
+            hints.append("statistics")
+        if any(w in lower for w in ("feature", "benefit", "pillar", "approach", "strategy")):
+            hints.append("cards")
+        if any(w in lower for w in ("step", "process", "workflow", "pipeline", "how to")):
+            hints.append("process")
+        if any(w in lower for w in ("team", "people", "founder", "member")):
+            hints.append("team")
+        if any(w in lower for w in ("quote", "testimonial", "review")):
+            hints.append("quote")
+        if any(w in lower for w in ("swot", "strength", "weakness")):
+            hints.append("swot")
+        if any(w in lower for w in ("table", "comparison table")):
+            hints.append("table")
+        if any(w in lower for w in ("price", "pricing", "plan", "tier")):
+            hints.append("pricing")
+
+        # Build a layout sequence. Always start with hero, end optionally with cta.
+        pool = hints if hints else ["statistics", "cards", "timeline", "comparison", "quote", "bullets", "process"]
+        layouts: list[str] = ["hero"]
+
+        # Body slides.
+        body_count = max(0, count - 1 - (1 if count > 8 else 0))
+        for i in range(body_count):
+            if i < len(hints):
+                layouts.append(hints[i])
+            else:
+                # Alternate between pool items.
+                layouts.append(pool[i % len(pool)])
+
+        # Closing slide for longer decks.
+        if count > 8:
+            layouts.append("cta")
+
+        return layouts[:count]
+
+    @staticmethod
+    def _build_section_titles(topic: str, count: int) -> list[str]:
+        """Generate section titles from the topic."""
+        words = topic.split()
+        short = words[0] if words else "This"
+        titles = [
+            f"Understanding {topic}",
+            f"Why {short} Matters Now",
+            f"Key Challenges in {short}",
+            f"The Approach",
+            f"Core Results",
+            f"Implementation Roadmap",
+            f"Measuring Success",
+            f"What Comes Next",
+            f"Getting Started",
+            f"Summary & Next Steps",
+        ]
+        return titles[:count]
 
     async def generate_spec(self, request: GenerationRequest) -> PresentationSpec:
         count = max(1, min(request.slide_count, 30))
-        topic = (request.prompt.strip() or "Presentation").capitalize()
+        topic = self._derive_title(request.prompt)
+        short = topic.split()[0] if topic.split() else "This"
+        layouts = self._pick_layouts(request.prompt, count)
+        section_titles = self._build_section_titles(topic, count)
+        tone = request.tone.lower()
 
-        slides: list[dict[str, Any]] = [
-            {
-                "layout": "hero",
-                "elements": [
-                    {"type": "title", "text": topic, "level": 1},
-                    {
-                        "type": "subtitle",
-                        "text": f"A {request.tone.lower()} presentation in {request.language}",
-                    },
-                ],
-                "notes": "Opening hero slide.",
-            }
-        ]
-        section_titles = [
-            "Overview",
-            "Why It Matters",
-            "How It Works",
-            "Key Results",
-            "What's Next",
-            "Call to Action",
-        ]
-        stat_layouts = ["statistics", "cards", "timeline", "comparison", "quote"]
-        # Body slides: leave room for the hero (1) and thank-you (1).
-        body_count = max(0, count - 2)
-        for i in range(body_count):
-            t = section_titles[i % len(section_titles)]
-            layout = stat_layouts[i % len(stat_layouts)]
-            if layout == "statistics":
+        slides: list[dict[str, Any]] = []
+
+        for i, layout in enumerate(layouts):
+            title = section_titles[i] if i < len(section_titles) else f"Slide {i + 1}"
+            elements: list[dict[str, Any]] = []
+
+            if layout == "hero":
                 elements = [
-                    {"type": "title", "text": f"{i + 1}. {t}", "level": 2},
+                    {"type": "title", "text": topic, "level": 1},
+                    {"type": "subtitle", "text": f"A {tone} overview for {request.language}-speaking audiences"},
+                ]
+            elif layout == "statistics":
+                elements = [
+                    {"type": "title", "text": title, "level": 2},
                     {
                         "type": "statistics",
                         "items": [
-                            {"value": "98%", "label": "Engagement"},
-                            {"value": "3x", "label": "Faster delivery"},
-                            {"value": "12k", "label": "Users"},
+                            {"value": "47%", "label": f"Impact on {short}"},
+                            {"value": "3.2x", "label": "Performance Gain"},
+                            {"value": "12k+", "label": "Active Users"},
                         ],
                     },
                 ]
             elif layout == "cards":
                 elements = [
-                    {"type": "title", "text": f"{i + 1}. {t}", "level": 2},
+                    {"type": "title", "text": title, "level": 2},
                     {
                         "type": "cards",
                         "items": [
-                            {"title": "Pillar one", "body": f"Detail about {topic.lower()}."},
-                            {"title": "Pillar two", "body": "Supporting point with evidence."},
-                            {"title": "Pillar three", "body": "Outcome and impact."},
+                            {"title": "Foundation", "body": f"The core principle behind {topic.lower()}"},
+                            {"title": "Execution", "body": f"How {short} is applied in practice"},
+                            {"title": "Impact", "body": f"Measurable outcomes for stakeholders"},
                         ],
                     },
                 ]
             elif layout == "timeline":
                 elements = [
-                    {"type": "title", "text": f"{i + 1}. {t}", "level": 2},
+                    {"type": "title", "text": title, "level": 2},
                     {
                         "type": "timeline",
                         "items": [
-                            {"year": "2024", "text": "Started"},
-                            {"year": "2025", "text": "Scaled"},
-                            {"year": "2026", "text": "Leader"},
+                            {"year": "Phase 1", "text": f"Research and planning for {short}"},
+                            {"year": "Phase 2", "text": f"Implementation of core {short} capabilities"},
+                            {"year": "Phase 3", "text": "Scaling and optimisation"},
+                            {"year": "Phase 4", "text": "Long-term sustainability"},
                         ],
                     },
                 ]
             elif layout == "comparison":
                 elements = [
-                    {"type": "title", "text": f"{i + 1}. {t}", "level": 2},
+                    {"type": "title", "text": title, "level": 2},
                     {
                         "type": "comparison",
-                        "left": {"title": "Before", "points": ["Manual", "Slow"]},
-                        "right": {"title": "After", "points": ["Automated", "Fast"]},
+                        "left": {
+                            "title": "Without",
+                            "points": [f"Manual {short} processes", "Inconsistent results", "Higher costs"],
+                        },
+                        "right": {
+                            "title": "With",
+                            "points": [f"Streamlined {short} workflow", "Reliable outcomes", "Cost reduction"],
+                        },
                     },
                 ]
-            else:  # quote
+            elif layout == "quote":
                 elements = [
-                    {"type": "title", "text": f"{i + 1}. {t}", "level": 2},
+                    {"type": "title", "text": title, "level": 2},
                     {
                         "type": "quote",
-                        "text": f"{t} is what sets {topic} apart.",
-                        "author": "Slide AI",
+                        "text": f"{topic} represents a fundamental shift in how organisations approach this domain.",
+                        "author": "Industry Analyst",
                     },
                 ]
-            slides.append({"layout": layout, "elements": elements})
+            elif layout == "process":
+                elements = [
+                    {"type": "title", "text": title, "level": 2},
+                    {
+                        "type": "bullets",
+                        "items": [
+                            f"Define objectives and success criteria for {short}",
+                            f"Design the approach based on best practices",
+                            f"Execute with iterative feedback loops",
+                            f"Measure and refine continuously",
+                        ],
+                    },
+                ]
+            elif layout == "team":
+                elements = [
+                    {"type": "title", "text": title, "level": 2},
+                    {
+                        "type": "bullets",
+                        "items": [
+                            "Cross-functional expertise",
+                            f"Deep experience in {short}",
+                            "Proven track record of delivery",
+                        ],
+                    },
+                ]
+            elif layout == "swot":
+                elements = [
+                    {"type": "title", "text": title, "level": 2},
+                    {
+                        "type": "bullets",
+                        "items": [
+                            "Strength: Clear value proposition",
+                            "Weakness: Early-stage adoption curve",
+                            "Opportunity: Growing market demand",
+                            "Threat: Competitive landscape",
+                        ],
+                    },
+                ]
+            elif layout == "table":
+                elements = [
+                    {"type": "title", "text": title, "level": 2},
+                    {
+                        "type": "table",
+                        "headers": ["Aspect", "Current", "Proposed"],
+                        "rows": [
+                            ["Efficiency", "Low", "High"],
+                            ["Cost", "High", "Reduced"],
+                            ["Scalability", "Limited", "Built-in"],
+                        ],
+                    },
+                ]
+            elif layout == "pricing":
+                elements = [
+                    {"type": "title", "text": title, "level": 2},
+                    {
+                        "type": "cards",
+                        "items": [
+                            {"title": "Starter", "body": "Essential features to get started"},
+                            {"title": "Professional", "body": "Advanced capabilities for growing teams"},
+                            {"title": "Enterprise", "body": "Full suite with dedicated support"},
+                        ],
+                    },
+                ]
+            elif layout == "cta":
+                elements = [
+                    {"type": "title", "text": f"Get Started with {short}", "level": 1},
+                    {"type": "subtitle", "text": "Begin your journey today"},
+                ]
+            else:
+                # Default: title + bullets
+                layout = "title"
+                elements = [
+                    {"type": "title", "text": title, "level": 2},
+                    {
+                        "type": "bullets",
+                        "items": [
+                            f"Key insight about {topic.lower()}",
+                            f"Supporting evidence and data points",
+                            f"Actionable next step for the audience",
+                        ],
+                    },
+                ]
 
-        slides.append(
-            {
-                "layout": "thank-you",
-                "elements": [
-                    {"type": "title", "text": "Thank you", "level": 1},
-                    {"type": "subtitle", "text": "Generated with Slide AI"},
-                ],
-            }
-        )
+            slides.append({"layout": layout, "elements": elements})
 
         spec = {
             "meta": {
