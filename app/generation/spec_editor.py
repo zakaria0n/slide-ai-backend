@@ -1,21 +1,26 @@
-"""AI-powered spec editing — modifies only affected slides via natural language.
+"""AI-powered spec editing — modifies a PresentationSpec via natural language.
 
-The provider takes an existing PresentationSpec + instruction and returns a
-patched spec. The offline provider applies deterministic rule-based edits so
-the feature works without a real AI key.
+Providers:
+- ``LlmSpecEditProvider``: sends current spec + instruction to the LLM and
+  returns a fully patched spec.  Used when an API key is configured.
+- ``OfflineSpecEditProvider``: deterministic rule-based fallback for dev / tests.
 """
 from __future__ import annotations
 
 import copy
-import re
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
+
 from app.core.config import Settings
+from app.core.exceptions import ProviderError
 from app.generation.spec import PresentationSpec
 
 DISPLAYED_PROVIDER = "Slide AI"
+_MAX_RETRIES = 1
 
 
 @dataclass
@@ -38,6 +43,127 @@ class SpecEditProvider(ABC):
         target_indexes: list[int] | None = None,
     ) -> SpecEditResult:
         ...
+
+
+# ---------------------------------------------------------------------------
+# Real LLM-based editor
+# ---------------------------------------------------------------------------
+
+_EDIT_SYSTEM_PROMPT = """\
+You are Slide AI, an expert presentation editor. You receive a presentation specification in JSON and a user instruction. Modify the spec according to the instruction and return the COMPLETE modified specification.
+
+RULES:
+1. Return ONLY valid JSON (no markdown fences). The entire spec must be returned — every slide, every element.
+2. Preserve all slides and elements that are not affected by the instruction.
+3. If the instruction says to change colors/theme, update meta.theme and any slide theme fields.
+4. If the instruction says to rewrite text, improve the text — make it concise and professional.
+5. If the instruction says to add a slide, insert it at a logical position.
+6. If the instruction says to delete a slide, remove it (but never delete the last slide).
+7. If the instruction says to move/reorder slides, rearrange the slides array.
+8. If the instruction says to change layout, change the layout field of the target slide.
+9. Always respond with a short summary of what you changed as a top-level "summary" field.
+10. Return a "changed_indexes" array of slide indices (0-based) that were modified.
+
+Response shape:
+{
+  "summary": "What you changed in one sentence.",
+  "changed_indexes": [0, 2, 5],
+  "meta": { ... },
+  "slides": [ ... ]
+}
+"""
+
+
+class LlmSpecEditProvider(SpecEditProvider):
+    """Real LLM-based spec editor."""
+
+    def __init__(self, settings: Settings) -> None:
+        self._base_url = settings.ai_provider_base_url.rstrip("/")
+        self._api_key = settings.ai_provider_api_key
+        self._model = settings.ai_provider_default_model
+        self._timeout = settings.ai_request_timeout_seconds
+
+    async def edit_spec(
+        self,
+        spec: PresentationSpec,
+        instruction: str,
+        target_indexes: list[int] | None = None,
+    ) -> SpecEditResult:
+        spec_json = spec.model_dump(mode="json")
+
+        user_msg = (
+            f"Instruction: {instruction}\n\n"
+            f"Current presentation:\n```json\n{json.dumps(spec_json, ensure_ascii=False)}\n```"
+        )
+        if target_indexes is not None:
+            user_msg += f"\nTarget slide indexes: {target_indexes}"
+
+        last_error: Exception | None = None
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            for attempt in range(_MAX_RETRIES + 1):
+                system = _EDIT_SYSTEM_PROMPT + (
+                    "\n\nThe previous response was invalid JSON or missing fields. "
+                    "Fix it and return valid JSON only."
+                    if attempt > 0
+                    else ""
+                )
+                try:
+                    resp = await client.post(
+                        f"{self._base_url}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {self._api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": self._model,
+                            "messages": [
+                                {"role": "system", "content": system},
+                                {"role": "user", "content": user_msg},
+                            ],
+                            "response_format": {"type": "json_object"},
+                            "temperature": 0.4,
+                        },
+                    )
+                except httpx.HTTPError as exc:
+                    raise ProviderError(
+                        f"{DISPLAYED_PROVIDER} is temporarily unavailable"
+                    ) from exc
+
+                if resp.status_code != 200:
+                    raise ProviderError(f"{DISPLAYED_PROVIDER} returned an error")
+
+                try:
+                    body = resp.json()
+                    content = body["choices"][0]["message"]["content"]
+                    data = json.loads(content.strip())
+                except (KeyError, IndexError, ValueError, json.JSONDecodeError) as exc:
+                    last_error = exc
+                    continue
+
+                # Extract summary and changed_indexes, then validate the spec.
+                summary = data.pop("summary", f"Applied: {instruction}")
+                changed = data.pop("changed_indexes", list(range(len(spec.slides))))
+
+                try:
+                    modified = PresentationSpec.model_validate(data)
+                except Exception as exc:
+                    last_error = exc
+                    continue
+
+                return SpecEditResult(
+                    modified_spec=modified,
+                    summary=str(summary),
+                    changed_indexes=changed if isinstance(changed, list) else [],
+                )
+
+        raise ProviderError(
+            f"{DISPLAYED_PROVIDER} could not process the edit instruction"
+        ) from last_error
+
+
+# ---------------------------------------------------------------------------
+# Offline rule-based editor (dev / tests)
+# ---------------------------------------------------------------------------
 
 
 class OfflineSpecEditProvider(SpecEditProvider):
@@ -168,9 +294,13 @@ class OfflineSpecEditProvider(SpecEditProvider):
         return SpecEditResult(modified_spec=modified, summary=summary, changed_indexes=[])
 
 
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+
 def build_spec_edit_provider(settings: Settings) -> SpecEditProvider:
     """Select a spec edit provider based on configuration."""
     if not settings.ai_provider_api_key or settings.ai_provider_api_key == "public":
         return OfflineSpecEditProvider()
-    # Real provider can be added later; for now fall back to offline.
-    return OfflineSpecEditProvider()
+    return LlmSpecEditProvider(settings)

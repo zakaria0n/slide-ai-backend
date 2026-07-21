@@ -22,7 +22,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
@@ -350,6 +350,67 @@ async def ai_edit_presentation(
         spec=result.modified_spec,
         summary=result.summary,
         changed_indexes=result.changed_indexes,
+    )
+
+
+@router.post("/{presentation_id}/edit/stream")
+async def ai_edit_presentation_stream(
+    presentation_id: UUID,
+    req: SpecEditRequest,
+    request: Request,
+    owner_id: UUID = Depends(_owner_id),
+    db: Database = Depends(_db),
+) -> StreamingResponse:
+    """Streaming AI edit — returns SSE events: thinking, then the full result."""
+    import asyncio
+    import json as _json
+
+    from app.generation.spec_editor import SpecEditResult, build_spec_edit_provider
+
+    settings: Settings = request.app.state.settings
+    provider = build_spec_edit_provider(settings)
+
+    async def event_stream():
+        session = db.session_factory()
+        try:
+            presentation = await PresentationRepository(session).get_owned(
+                presentation_id, owner_id
+            )
+            if presentation is None:
+                yield f"event: error\ndata: {_json.dumps({'message': 'Presentation not found'})}\n\n"
+                return
+
+            current_spec = PresentationSpec.model_validate(presentation.spec)
+
+            yield "event: thinking\ndata: {}\n\n"
+
+            result: SpecEditResult = await provider.edit_spec(
+                current_spec, req.instruction, req.target_indexes
+            )
+
+            from app.presentations.versioning import snapshot_if_changed
+            await snapshot_if_changed(session, presentation_id, owner_id, current_spec, note=f"before: {req.instruction}")
+
+            presentation.spec = result.modified_spec.model_dump()
+            presentation.slide_count = len(result.modified_spec.slides)
+            session.add(presentation)
+            await session.commit()
+
+            payload = {
+                "spec": result.modified_spec.model_dump(mode="json"),
+                "summary": result.summary,
+                "changed_indexes": result.changed_indexes,
+            }
+            yield f"event: result\ndata: {_json.dumps(payload)}\n\n"
+        except Exception as exc:
+            yield f"event: error\ndata: {_json.dumps({'message': str(exc)})}\n\n"
+        finally:
+            await session.close()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
