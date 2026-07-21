@@ -57,6 +57,7 @@ def _export_pptx(spec: PresentationSpec, t: ThemeTokens) -> bytes:
     accent2 = _hex(t.accent2)
     text_c = _hex(t.text)
     muted_c = _hex(t.text_muted)
+    surface2 = _hex(t.surface2)
 
     for slide in spec.slides:
         s = slide.model_dump() if hasattr(slide, "model_dump") else slide
@@ -76,6 +77,13 @@ def _export_pptx(spec: PresentationSpec, t: ThemeTokens) -> bytes:
         for el in g.get("subtitle", []):
             _add_text(tf, str(el.get("text", "")), 24, muted_c)
 
+        # Paragraph
+        for el in g.get("paragraph", []):
+            box = ppt_slide.shapes.add_textbox(Emu(685_800), Emu(1_700_000), Emu(11_961_600), Emu(3_000_000))
+            tf = box.text_frame
+            tf.word_wrap = True
+            _add_text(tf, str(el.get("text", "")), 18, muted_c)
+
         # Bullets
         if g.get("bullets"):
             b = g["bullets"][0]
@@ -86,9 +94,63 @@ def _export_pptx(spec: PresentationSpec, t: ThemeTokens) -> bytes:
             for item in (b.get("items") or []):
                 p = tf.paragraphs[0] if first else tf.add_paragraph()
                 first = False
-                p.text = f"• {item}"
+                p.text = f"\u2022 {item}"
                 p.font.size = Pt(22)
                 p.font.color.rgb = text_c
+
+        # Table
+        for el in g.get("table", []):
+            headers = el.get("headers") or []
+            rows = el.get("rows") or []
+            ncols = len(headers) or (len(rows[0]) if rows else 1)
+            nrows = len(rows) + (1 if headers else 0)
+            tbl_shape = ppt_slide.shapes.add_table(nrows, ncols, Emu(685_800), Emu(2_000_000), Emu(11_961_600), Emu(4_000_000))
+            tbl = tbl_shape.table
+            if headers:
+                for ci, h in enumerate(headers):
+                    cell = tbl.cell(0, ci)
+                    cell.text = str(h)
+                    for paragraph in cell.text_frame.paragraphs:
+                        paragraph.font.size = Pt(16)
+                        paragraph.font.bold = True
+                        paragraph.font.color.rgb = accent
+                    cell.fill.solid()
+                    cell.fill.fore_color.rgb = surface2
+            for ri, row in enumerate(rows):
+                for ci, val in enumerate(row):
+                    r = ri + (1 if headers else 0)
+                    if r < nrows and ci < ncols:
+                        cell = tbl.cell(r, ci)
+                        cell.text = str(val)
+                        for paragraph in cell.text_frame.paragraphs:
+                            paragraph.font.size = Pt(14)
+                            paragraph.font.color.rgb = text_c
+
+        # Timeline
+        for el in g.get("timeline", []):
+            items = el.get("items") or []
+            ty = Emu(2_000_000)
+            for it in items:
+                # Time/year label
+                box = ppt_slide.shapes.add_textbox(Emu(685_800), ty, Emu(2_000_000), Emu(300_000))
+                tf = box.text_frame
+                _add_text(tf, str(it.get("year", it.get("time", ""))), 14, accent, bold=True)
+                # Dot shape
+                dot = ppt_slide.shapes.add_shape(
+                    1, Emu(3_000_000), ty + Emu(50_000), Emu(160_000), Emu(160_000)
+                )
+                dot.fill.solid()
+                dot.fill.fore_color.rgb = accent
+                dot.line.fill.background()
+                # Text content
+                box2 = ppt_slide.shapes.add_textbox(Emu(3_400_000), ty, Emu(9_200_000), Emu(500_000))
+                tf2 = box2.text_frame
+                tf2.word_wrap = True
+                _add_text(tf2, str(it.get("text", "")), 18, text_c, bold=True)
+                body = it.get("description", it.get("body", ""))
+                if body:
+                    _add_text(tf2, str(body), 14, muted_c)
+                ty += Emu(600_000)
 
         # Cards / Statistics as a simple grid of text boxes
         for key in ("cards", "statistics"):
@@ -117,7 +179,7 @@ def _export_pptx(spec: PresentationSpec, t: ThemeTokens) -> bytes:
                 tf.word_wrap = True
                 _add_text(tf, str(col.get("title", "")), 22, accent2 if ci else accent, bold=True)
                 for pnt in (col.get("points") or []):
-                    _add_text(tf, f"• {pnt}", 16, text_c)
+                    _add_text(tf, f"\u2022 {pnt}", 16, text_c)
 
         # Quote
         for el in g.get("quote", []):
@@ -125,9 +187,38 @@ def _export_pptx(spec: PresentationSpec, t: ThemeTokens) -> bytes:
             tf = box.text_frame
             tf.word_wrap = True
             tf.vertical_anchor = MSO_ANCHOR.MIDDLE
-            _add_text(tf, f"“{el.get('text','')}”", 28, text_c, italic=True)
+            _add_text(tf, f"\u201c{el.get('text','')}\u201d", 28, text_c, italic=True)
             if el.get("author"):
-                _add_text(tf, f"— {el.get('author')}", 18, muted_c)
+                _add_text(tf, f"\u2014 {el.get('author')}", 18, muted_c)
+
+        # Code
+        for el in g.get("code", []):
+            box = ppt_slide.shapes.add_textbox(Emu(685_800), Emu(2_000_000), Emu(11_961_600), Emu(4_500_000))
+            tf = box.text_frame
+            tf.word_wrap = True
+            p = tf.paragraphs[0]
+            p.text = str(el.get("code", ""))
+            p.font.size = Pt(12)
+            p.font.name = "Courier New"
+            p.font.color.rgb = RGBColor(0xC8, 0xC8, 0xFF)
+            box.fill.solid()
+            box.fill.fore_color.rgb = RGBColor(0x0A, 0x0A, 0x14)
+
+        # Image (placeholder — PPTX cannot embed remote URLs without download)
+        for el in g.get("image", []):
+            alt = el.get("alt", "Image")
+            box = ppt_slide.shapes.add_textbox(Emu(685_800), Emu(2_000_000), Emu(11_961_600), Emu(4_000_000))
+            tf = box.text_frame
+            tf.word_wrap = True
+            tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+            _add_text(tf, f"[{alt}]", 20, muted_c, italic=True)
+
+        # Icon
+        for el in g.get("icon", []):
+            label = el.get("label") or el.get("name") or ""
+            box = ppt_slide.shapes.add_textbox(Emu(685_800), Emu(2_000_000), Emu(1_500_000), Emu(500_000))
+            tf = box.text_frame
+            _add_text(tf, label, 24, accent)
 
     # Document property (brand only)
     prs.core_properties.title = (getattr(spec.meta, "title", "Slide AI Presentation") if spec.meta else "Slide AI Presentation")

@@ -54,27 +54,46 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from app.auth.providers.supabase import SupabaseAuthProvider
 
     _secret = settings.supabase_jwt_secret or "dev-insecure-secret"
-    if settings.supabase_url and settings.supabase_service_role_key:
-        from supabase import AsyncClient, AsyncClientOptions, create_async_client
+    use_supabase = settings.supabase_url and settings.supabase_service_role_key
+    if use_supabase and "sqlite" not in settings.sqlalchemy_database_uri:
+        try:
+            from supabase import AsyncClient, AsyncClientOptions, create_async_client
 
-        supabase_client: AsyncClient = await create_async_client(
-            settings.supabase_url,
-            settings.supabase_service_role_key,
-            options=AsyncClientOptions(auto_refresh_token=False, persist_session=False),
-        )
-        app.state.auth_provider = SupabaseAuthProvider(supabase_client)
-        logger.info("Auth provider: Supabase")
-        from app.files.storage import SupabaseStorageGateway
+            supabase_client: AsyncClient = await create_async_client(
+                settings.supabase_url,
+                settings.supabase_service_role_key,
+                options=AsyncClientOptions(auto_refresh_token=False, persist_session=False),
+            )
+            app.state.auth_provider = SupabaseAuthProvider(supabase_client)
+            logger.info("Auth provider: Supabase")
+            from app.files.storage import SupabaseStorageGateway
 
-        app.state.storage = SupabaseStorageGateway(supabase_client)
-        logger.info("Storage: Supabase")
-    else:
+            app.state.storage = SupabaseStorageGateway(supabase_client)
+            logger.info("Storage: Supabase")
+        except Exception as exc:
+            logger.warning("Supabase init failed, falling back to fake: %s", exc)
+            use_supabase = False
+
+    if not use_supabase:
         app.state.auth_provider = FakeAuthProvider(_secret)
-        logger.info("Auth provider: in-memory fake (Supabase not configured)")
+        logger.info("Auth provider: in-memory fake")
         from app.files.storage import InMemoryStorageGateway
 
         app.state.storage = InMemoryStorageGateway()
-        logger.info("Storage: in-memory (Supabase not configured)")
+        logger.info("Storage: in-memory")
+
+    # For SQLite, auto-create all tables so local dev works without migrations.
+    if "sqlite" in settings.sqlalchemy_database_uri:
+        from app.db.base import Base
+        import app.models.presentation  # noqa: F401
+        import app.models.slide  # noqa: F401
+        import app.models.file_asset  # noqa: F401
+        import app.models.presentation_version  # noqa: F401
+        import app.models.presentation_share  # noqa: F401
+        import app.models.workspace  # noqa: F401
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("SQLite tables auto-created")
 
     # Verify the database accepts connections before serving traffic.
     try:
