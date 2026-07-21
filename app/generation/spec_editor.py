@@ -183,20 +183,20 @@ class OfflineSpecEditProvider(SpecEditProvider):
 
     _THEME_MAP: dict[str, str] = {
         "modern": "modern",
+        "corporate": "corporate",
+        "startup": "startup",
+        "education": "education",
+        "medical": "medical",
+        "finance": "finance",
+        "luxury": "luxury",
         "minimal": "minimal",
-        "bold": "bold",
-        "elegant": "elegant",
+        "glass": "glass",
         "dark": "dark",
-        "default": "default",
-        "gradient": "gradient",
-        "sunset": "sunset",
-        "ocean": "ocean",
-        "forest": "forest",
         "neon": "neon",
-        "pastel": "pastel",
-        "coral": "coral",
-        "midnight": "midnight",
-        "monochrome": "monochrome",
+        "apple": "apple",
+        "google": "google",
+        "microsoft": "microsoft",
+        "openai": "openai",
     }
 
     async def edit_spec(

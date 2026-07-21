@@ -167,7 +167,11 @@ class OnlineSpecProvider(SpecProvider):
             f"Tone: {request.tone}\n"
             f"Language: {request.language}"
             + (f"\nTheme: {request.theme} — adapt content style to this theme." if request.theme else "")
-            + "\n\nRemember: craft a short, professional meta.title (NOT the topic text). "
+            + "\n\n"
+            f"IMPORTANT: You MUST generate exactly {request.slide_count} slides. No more, no fewer.\n"
+            "IMPORTANT: The meta.title must be a SHORT, PROFESSIONAL name (3-6 words). "
+            "Do NOT use the user's raw prompt as the title. "
+            "Example: prompt 'Create a presentation about AI in healthcare' → title 'AI in Healthcare'.\n"
             "Give every slide a real, expressive title. Vary layouts. Keep text minimal and impactful."
         )
         last_error: Exception | None = None

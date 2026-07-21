@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     ai_allowed_models: list[str] = Field(
         default_factory=lambda: ["deepseek-v4-flash-free"]
     )
-    ai_request_timeout_seconds: float = 60.0
+    ai_request_timeout_seconds: float = 120.0
 
     @field_validator("ai_allowed_models", mode="before")
     @classmethod
