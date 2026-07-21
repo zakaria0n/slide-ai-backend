@@ -2,7 +2,7 @@
 
 Builds a :class:`PresentationSpec` from a :class:`GenerationRequest`.
 
-* The real provider (OpenCode Zen, surfaced only as "Slide AI") is prompted
+* The real provider (surfaced only as "Slide AI") is prompted
   to return the strict specification JSON.
 * The offline stub produces a valid spec deterministically so the full
   pipeline works without a network key.
@@ -151,7 +151,7 @@ def _parse_spec(raw: str) -> PresentationSpec:
         raise ProviderError("The specification did not match the required schema") from exc
 
 
-class OpenCodeZenSpecProvider(SpecProvider):
+class OnlineSpecProvider(SpecProvider):
     """Real provider client that returns a structured specification."""
 
     def __init__(self, settings: Settings) -> None:
@@ -335,9 +335,9 @@ class OfflineSpecProvider(SpecProvider):
 
 def build_spec_provider(settings: Settings) -> SpecProvider:
     """Select a spec provider based on configuration."""
-    if not settings.ai_provider_api_key or settings.ai_provider_api_key == "public":
+    if not settings.ai_provider_api_key:
         return OfflineSpecProvider()
-    return OpenCodeZenSpecProvider(settings)
+    return OnlineSpecProvider(settings)
 
 
 _SYSTEM_PROMPT = (

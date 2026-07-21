@@ -58,13 +58,11 @@ class BadRequestError(AppError):
 class ProviderError(AppError):
     """Raised when the upstream AI provider fails.
 
-    The real provider identity (OpenCode Zen) is never surfaced; callers
-    see the abstract ``Slide AI`` provider name instead.
+    The provider is always surfaced as "Slide AI" to the outside world.
     """
 
     status_code = 502
     code = "provider_error"
 
     def __init__(self, message: str, *, detail: str | None = None) -> None:
-        provider_msg = message.replace("OpenCode Zen", "Slide AI")
-        super().__init__(provider_msg, detail=detail)
+        super().__init__(message, detail=detail)

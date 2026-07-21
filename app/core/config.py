@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     supabase_service_role_key: str = ""
     supabase_jwt_secret: str = ""
 
-    # --- AI provider (internal: OpenCode Zen, exposed to users as "Slide AI") ---
+    # --- AI provider (exposed to users as "Slide AI") ---
     ai_provider_base_url: str = "https://opencode.ai/zen/v1"
     ai_provider_api_key: str = "public"
     ai_provider_default_model: str = "deepseek-v4-flash-free"

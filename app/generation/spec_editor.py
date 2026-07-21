@@ -1,7 +1,7 @@
 """AI-powered spec editing — modifies a PresentationSpec via natural language.
 
 Providers:
-- ``LlmSpecEditProvider``: sends current spec + instruction to the LLM and
+- ``OnlineSpecEditProvider``: sends current spec + instruction to the LLM and
   returns a fully patched spec.  Used when an API key is configured.
 - ``OfflineSpecEditProvider``: deterministic rule-based fallback for dev / tests.
 """
@@ -74,7 +74,7 @@ Response shape:
 """
 
 
-class LlmSpecEditProvider(SpecEditProvider):
+class OnlineSpecEditProvider(SpecEditProvider):
     """Real LLM-based spec editor."""
 
     def __init__(self, settings: Settings) -> None:
@@ -301,6 +301,6 @@ class OfflineSpecEditProvider(SpecEditProvider):
 
 def build_spec_edit_provider(settings: Settings) -> SpecEditProvider:
     """Select a spec edit provider based on configuration."""
-    if not settings.ai_provider_api_key or settings.ai_provider_api_key == "public":
+    if not settings.ai_provider_api_key:
         return OfflineSpecEditProvider()
-    return LlmSpecEditProvider(settings)
+    return OnlineSpecEditProvider(settings)
