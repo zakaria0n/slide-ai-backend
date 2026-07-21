@@ -8,6 +8,7 @@ while staying dependency-free. Animations are recreated with CSS keyframes
 from __future__ import annotations
 
 import html
+import os
 from typing import Any
 
 from app.export.html_theme import ThemeTokens, tokens_for
@@ -171,14 +172,39 @@ class HtmlExportStrategy(ExportStrategy):
 
 
 class PdfExportStrategy(ExportStrategy):
-    """Static export: print-optimized HTML (browser "Save as PDF" keeps the
-    layout + theme but drops the animations)."""
+    """Renders the HTML export to a real vector PDF via Playwright (Chromium headless)."""
 
     format = ExportFormat.PDF
 
-    def export(self, spec: PresentationSpec, theme_hint: str | None = None) -> ExportedFile:
+    async def export(self, spec: PresentationSpec, theme_hint: str | None = None) -> ExportedFile:
+        import asyncio
+        import tempfile
+
+        from playwright.async_api import async_playwright
+
         t = tokens_for(theme_hint or (getattr(spec.meta, "theme", None) if spec.meta else None))
         doc = render_spec_html(spec, t, animate=False)
         title = getattr(spec.meta, "title", "presentation") if spec.meta else "presentation"
         safe = "".join(c if c.isalnum() else "-" for c in str(title)).strip("-") or "presentation"
-        return ExportedFile(doc.encode("utf-8"), "application/pdf", f"{safe}.pdf")
+
+        # Write HTML to a temp file so Chromium can load it via file://
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as f:
+            f.write(doc)
+            html_path = f.name
+
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page()
+                await page.goto(f"file:///{html_path.replace(os.sep, '/')}", wait_until="networkidle")
+                pdf_bytes = await page.pdf(
+                    width="1280px",
+                    height="720px",
+                    print_background=True,
+                    margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
+                )
+                await browser.close()
+        finally:
+            os.unlink(html_path)
+
+        return ExportedFile(pdf_bytes, "application/pdf", f"{safe}.pdf")

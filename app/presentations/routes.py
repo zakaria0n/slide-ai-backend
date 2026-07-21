@@ -228,9 +228,8 @@ async def export_presentation(
 ) -> Response:
     """Export a presentation to HTML / PDF / PPTX.
 
-    - ``html`` returns a self-contained animated HTML file (the primary
-      Slide AI product).
-    - ``pdf`` returns print-optimized static HTML (Save as PDF).
+    - ``html`` returns a self-contained animated HTML file.
+    - ``pdf`` returns a real vector PDF rendered via Playwright.
     - ``pptx`` returns a native PowerPoint file with content only.
     """
     session = db.session_factory()
@@ -246,7 +245,7 @@ async def export_presentation(
     if not spec_raw:
         raise NotFoundError("Presentation specification not found")
     spec = PresentationSpec.model_validate(spec_raw)
-    exported = ExportService().export(spec, fmt=format, theme_hint=spec.meta.theme if spec.meta else None)
+    exported = await ExportService().export(spec, fmt=format, theme_hint=spec.meta.theme if spec.meta else None)
     return Response(
         content=exported.data,
         media_type=exported.media_type,
