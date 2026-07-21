@@ -41,34 +41,88 @@ class SpecProvider(ABC):
 
 # The strict schema description embedded in prompts so the model returns the
 # exact structure the renderer expects.
-_SCHEMA_HINT = (
-    "Return ONLY valid JSON (no markdown) with this shape:\n"
-    "{\n"
-    '  "meta": {"title": str, "theme": str|null, "background": str|null, '
-    '"language": str, "tone": str},\n'
-    '  "slides": [\n'
-    "    {\n"
-    '      "layout": one of hero/title/agenda/section/timeline/comparison/'
-    "cards/statistics/pricing/gallery/process/flow/roadmap/team/quote/"
-    "swot/table/chart/image-left/image-right/cta/conclusion/thank-you,\n"
-    '      "background": str|null,\n'
-    '      "theme": str|null,\n'
-    '      "notes": str|null,\n'
-    '      "elements": [ { "type": "title", "text": str, "level": int },\n'
-    '                     { "type": "subtitle", "text": str },\n'
-    '                     { "type": "paragraph", "text": str },\n'
-    '                     { "type": "bullets", "items": [str] },\n'
-    '                     { "type": "image", "src": str|null, "alt": str },\n'
-    '                     { "type": "quote", "text": str, "author": str|null },\n'
-    '                     { "type": "statistics", "items": [{"value":str,"label":str}] },\n'
-    '                     { "type": "cards", "items": [{"title":str,"body":str}] },\n'
-    '                     { "type": "table", "headers":[str], "rows":[[...]] },\n'
-    '                     { "type": "code", "language": str, "code": str } ]\n'
-    "    }\n"
-    "  ]\n"
-    "}\n"
-    "Use varied, professional layouts across slides."
-)
+_SCHEMA_HINT = """\
+Return ONLY valid JSON (no markdown fences, no commentary) with this exact shape:
+{
+  "meta": {"title": "<concise deck title>", "theme": "<theme_name>|null", "background": null, "language": "<lang>", "tone": "<tone>"},
+  "slides": [
+    {
+      "layout": "<one of: hero, title, agenda, section, timeline, comparison, cards, statistics, pricing, gallery, process, flow, roadmap, team, quote, swot, table, chart, image-left, image-right, cta, conclusion, thank-you>",
+      "background": null,
+      "theme": null,
+      "notes": "<speaker notes or null>",
+      "elements": [
+        {"type": "title", "text": "...", "level": 1},
+        {"type": "subtitle", "text": "..."},
+        {"type": "paragraph", "text": "..."},
+        {"type": "bullets", "items": ["..."]},
+        {"type": "image", "src": null, "alt": "..."},
+        {"type": "quote", "text": "...", "author": "..."},
+        {"type": "statistics", "items": [{"value": "...", "label": "..."}]},
+        {"type": "cards", "items": [{"title": "...", "body": "..."}]},
+        {"type": "timeline", "items": [{"year": "...", "text": "..."}]},
+        {"type": "comparison", "left": {"title": "...", "points": ["..."]}, "right": {"title": "...", "points": ["..."]}},
+        {"type": "table", "headers": ["..."], "rows": [["..."]]},
+        {"type": "code", "language": "...", "code": "..."}
+      ]
+    }
+  ]
+}
+
+DESIGN RULES — follow these strictly:
+
+1. TITLE RULES (most important):
+   - NEVER use the user's raw prompt as a slide title.
+   - The meta.title must be a SHORT, PROFESSIONAL name (3-6 words). If the user says "Create a 5-slide investor pitch for a climate tech startup", the title is "ClimateTech" or "GreenVolt", NOT "Create a 5-slide investor pitch...".
+   - Each slide's title (level 1 or 2) must be a REAL HEADING that captures the slide's content — not a numbered generic like "1. Overview". Use expressive titles like "The $12B Green Energy Gap" or "How We Cut Costs 60%".
+   - Vary title styles: some bold statements, some questions, some data-driven.
+
+2. STORYTELLING & STRUCTURE:
+   - Slide 1: hero layout with a powerful, short title + compelling subtitle. Hook the audience immediately.
+   - Early slides: set context — what problem exists, why it matters.
+   - Middle slides: the solution, evidence, data, comparisons.
+   - Late slides: roadmap, team, social proof, call to action.
+   - Final slide: thank-you or cta layout.
+   - Build a NARRATIVE arc. Each slide should logically lead to the next.
+
+3. VISUAL HIERARCHY & TEXT AMOUNT:
+   - Titles: 2-6 words max. Punchy.
+   - Subtitles: one line, supplementary context.
+   - Bullet points: 3-5 items per slide, each 3-10 words. Concise, not sentences.
+   - Paragraphs: 1-2 sentences max per slide. If you need more, use bullets instead.
+   - NEVER wall-of-text. A slide should be scannable in 3 seconds.
+
+4. LAYOUT VARIETY — use diverse layouts to maintain visual interest:
+   - hero: opening or major section starts
+   - title + section: section dividers between topics
+   - statistics: when showcasing numbers, metrics, KPIs (use 3-4 stats)
+   - comparison: pros vs cons, before vs after, us vs competitors
+   - cards: features, pillars, benefits (3-4 cards)
+   - timeline: chronological events, milestones, roadmap phases
+   - process/flow: step-by-step flows, pipelines
+   - team: people with roles
+   - quote: testimonials or powerful statements
+   - swot: strengths/weaknesses/opportunities/threats analysis
+   - table: structured data comparison
+   - pricing: pricing tiers
+   - chart: bar-chart style data visualization (uses statistics element)
+   - cta: call-to-action slides
+   - agenda: overview of what will be covered
+   - NEVER use the same layout more than twice in a row.
+
+5. CONTENT QUALITY:
+   - Use specific, believable data in statistics (e.g., "47% faster" not "faster").
+   - Cards should have distinct, meaningful titles — not "Point 1", "Point 2".
+   - Timeline entries need real-looking years/labels and descriptive text.
+   - Comparisons should have balanced, substantive points on each side.
+
+6. THEME AWARENESS:
+   - If a theme is specified, tailor the content style to match.
+   - For corporate themes: use formal language, data-driven content.
+   - For startup themes: bold claims, growth metrics, vision language.
+   - For education themes: clear explanations, structured learning.
+   - For minimal themes: less text, more white space, fewer elements per slide.
+"""
 
 
 def _strip_fences(text: str) -> str:
@@ -108,11 +162,13 @@ class OpenCodeZenSpecProvider(SpecProvider):
 
     async def generate_spec(self, request: GenerationRequest) -> PresentationSpec:
         user_prompt = (
+            f"Create a {request.slide_count}-slide presentation.\n"
             f"Topic: {request.prompt}\n"
-            f"Number of slides: {request.slide_count}\n"
             f"Tone: {request.tone}\n"
             f"Language: {request.language}"
-            + (f"\nTheme: {request.theme}" if request.theme else "")
+            + (f"\nTheme: {request.theme} — adapt content style to this theme." if request.theme else "")
+            + "\n\nRemember: craft a short, professional meta.title (NOT the topic text). "
+            "Give every slide a real, expressive title. Vary layouts. Keep text minimal and impactful."
         )
         last_error: Exception | None = None
         async with httpx.AsyncClient(timeout=self._timeout) as client:
@@ -285,7 +341,8 @@ def build_spec_provider(settings: Settings) -> SpecProvider:
 
 
 _SYSTEM_PROMPT = (
-    "You are Slide AI, an expert presentation designer. "
-    "Generate a structured presentation specification.\n"
+    "You are Slide AI, a world-class presentation designer. "
+    "You create stunning, professional presentations that tell compelling stories. "
+    "Every slide you design is visually balanced, content-sparse, and impactful.\n\n"
     + _SCHEMA_HINT
 )
