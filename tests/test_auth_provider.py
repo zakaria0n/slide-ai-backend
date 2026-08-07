@@ -64,3 +64,17 @@ async def test_current_user_missing_token(service: AuthService) -> None:
 
 async def test_signout_is_best_effort(service: AuthService) -> None:
     await service.sign_out(refresh_token=None)  # must not raise
+
+
+async def test_update_profile_persists_name(service: AuthService) -> None:
+    await service.sign_up(
+        SignUpRequest(email="up@e.com", password="password123", full_name="Old")
+    )
+    signin = await service.sign_in(SignInRequest(email="up@e.com", password="password123"))
+    updated = await service.update_profile(signin.tokens.access_token, "New Name")
+    assert updated.display_name == "New Name"
+
+
+async def test_update_profile_requires_token(service: AuthService) -> None:
+    with pytest.raises(UnauthorizedError):
+        await service.update_profile(None, "New Name")

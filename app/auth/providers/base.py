@@ -33,6 +33,12 @@ class AuthProvider(ABC):
     async def get_user(self, *, access_token: str) -> User:
         """Resolve a user from an access token."""
 
+    @abstractmethod
+    async def update_user_profile(
+        self, *, access_token: str, full_name: str
+    ) -> User:
+        """Persist a user's display name and return the updated user."""
+
 
 class UserAlreadyExistsError(Exception):
     """Raised when sign-up collides with an existing email."""

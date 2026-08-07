@@ -26,7 +26,7 @@ def _session(access="a", refresh="r", expires_in=3600):
     return SimpleNamespace(access_token=access, refresh_token=refresh, expires_in=expires_in)
 
 
-def _client(sign_up=None, sign_in=None, sign_out=None, get_user=None):
+def _client(sign_up=None, sign_in=None, sign_out=None, get_user=None, update_user=None):
     """Build a fake AsyncClient-like object (auth lives under ``.auth``)."""
 
     class FakeAuth:
@@ -45,6 +45,9 @@ def _client(sign_up=None, sign_in=None, sign_out=None, get_user=None):
 
         async def get_user(self, token):
             return get_user(token)
+
+        async def update_user(self, attributes):
+            return update_user(attributes)
 
     class FakeClient:
         auth = FakeAuth()
@@ -122,3 +125,18 @@ async def test_unexpected_provider_error_is_masked() -> None:
 async def test_sign_out_best_effort() -> None:
     provider = SupabaseAuthProvider(_client())
     await provider.sign_out(refresh_token="r")  # must not raise
+
+
+async def test_update_user_profile_maps_full_name() -> None:
+    uid = uuid4()
+    client = _client(
+        update_user=lambda attrs: SimpleNamespace(
+            user=_user(uid, "p@e.com", {"full_name": attrs["data"]["full_name"]})
+        )
+    )
+    provider = SupabaseAuthProvider(client)
+    user = await provider.update_user_profile(
+        access_token="tok", full_name="Ava"
+    )
+    assert user.id == uid
+    assert user.display_name == "Ava"

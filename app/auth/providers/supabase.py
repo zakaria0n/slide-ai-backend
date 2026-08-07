@@ -76,6 +76,22 @@ class SupabaseAuthProvider(AuthProvider):
             raise InvalidCredentialsError("Invalid or expired session")
         return self._to_user(user)
 
+    async def update_user_profile(
+        self, *, access_token: str, full_name: str
+    ) -> User:
+        # Persist the display name into Supabase Auth user_metadata so it
+        # survives across devices/sessions, not just this browser.
+        try:
+            resp = await self._client.auth.update_user(  # type: ignore[attr-defined]
+                {"data": {"full_name": full_name}},
+            )
+        except Exception as exc:  # noqa: BLE001 - provider boundary
+            self._raise_from(exc)
+        user = getattr(resp, "user", None)
+        if user is None:
+            raise AuthProviderError("Provider returned an incomplete response")
+        return self._to_user(user)
+
     # --- Mapping helpers ---
 
     def _to_result(self, resp: object) -> AuthResult:

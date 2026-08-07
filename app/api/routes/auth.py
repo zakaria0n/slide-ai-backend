@@ -13,12 +13,14 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 
 from app.api.deps import extract_token
+from app.api.deps import extract_token
 from app.auth.schemas import (
     AuthResponse,
     MessageResponse,
     SignInRequest,
     SignOutRequest,
     SignUpRequest,
+    UpdateProfileRequest,
     UserResponse,
 )
 from app.auth.service import AuthService
@@ -96,6 +98,16 @@ async def me(
     service: AuthService = Depends(_service),
 ) -> UserResponse:
     user = await service.current_user(token)
+    return UserResponse.from_entity(user)
+
+
+@router.patch("/me", response_model=UserResponse)
+async def update_me(
+    req: UpdateProfileRequest,
+    token: str = Depends(extract_token),
+    service: AuthService = Depends(_service),
+) -> UserResponse:
+    user = await service.update_profile(token, req.full_name)
     return UserResponse.from_entity(user)
 
 

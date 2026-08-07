@@ -61,9 +61,16 @@ class AuthService:
     async def current_user(self, access_token: str | None) -> User:
         if not access_token:
             raise UnauthorizedError("Missing authentication token")
-        try:
-            return self._verifier.to_user(access_token)
-        except UnauthorizedError:
-            # Fall back to the provider only if local verification failed but
-            # a token was supplied (e.g. clock skew handled by provider).
-            raise
+        # Validate the token signature/expiry locally, then read the latest
+        # profile from the provider so /auth/me always reflects persisted
+        # metadata (including a server-side display-name update).
+        self._verifier.user_id(access_token)
+        return await self._provider.get_user(access_token=access_token)
+
+    async def update_profile(self, access_token: str | None, full_name: str) -> User:
+        if not access_token:
+            raise UnauthorizedError("Missing authentication token")
+        return await self._provider.update_user_profile(
+            access_token=access_token,
+            full_name=full_name.strip(),
+        )

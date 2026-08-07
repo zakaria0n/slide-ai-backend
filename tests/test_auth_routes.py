@@ -60,6 +60,39 @@ def test_signin_success_and_me(client: TestClient) -> None:
     assert me.json()["email"] == "me@example.com"
 
 
+def test_update_display_name_persists(client: TestClient) -> None:
+    res = client.post(
+        "/api/v1/auth/signup",
+        json={"email": "rename@example.com", "password": "password123", "full_name": "Old"},
+    )
+    token = res.json()["tokens"]["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    updated = client.patch("/api/v1/auth/me", json={"full_name": "Neo"}, headers=headers)
+    assert updated.status_code == 200
+    assert updated.json()["display_name"] == "Neo"
+
+    me = client.get("/api/v1/auth/me", headers=headers)
+    assert me.json()["display_name"] == "Neo"
+
+
+def test_update_display_name_requires_auth(client: TestClient) -> None:
+    res = client.patch("/api/v1/auth/me", json={"full_name": "Neo"})
+    assert res.status_code == 401
+
+
+def test_update_display_name_validation(client: TestClient) -> None:
+    res = client.post(
+        "/api/v1/auth/signup",
+        json={"email": "val@example.com", "password": "password123"},
+    )
+    token = res.json()["tokens"]["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    res = client.patch("/api/v1/auth/me", json={"full_name": ""}, headers=headers)
+    assert res.status_code == 422
+
+
 def test_signin_wrong_password_401(client: TestClient) -> None:
     client.post(
         "/api/v1/auth/signup",

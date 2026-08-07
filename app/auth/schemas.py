@@ -27,6 +27,12 @@ class SignOutRequest(BaseModel):
     scope: str | None = None
 
 
+class UpdateProfileRequest(BaseModel):
+    """Display-name update persisted server-side (Supabase Auth)."""
+
+    full_name: str = Field(min_length=1, max_length=120)
+
+
 # --- Responses ---
 
 class TokenResponse(BaseModel):

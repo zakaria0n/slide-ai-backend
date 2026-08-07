@@ -76,6 +76,25 @@ class FakeAuthProvider(AuthProvider):
                 return user
         raise InvalidCredentialsError("Invalid or expired session")
 
+    async def update_user_profile(
+        self, *, access_token: str, full_name: str
+    ) -> User:
+        user = await self.get_user(access_token=access_token)
+        metadata = dict(user.metadata)
+        metadata["full_name"] = full_name
+        updated = User(
+            id=user.id,
+            email=user.email,
+            created_at=user.created_at,
+            metadata=metadata,
+        )
+        for key in list(self._users):
+            _pwd, existing = self._users[key]
+            if existing.id == user.id:
+                self._users[key] = (_pwd, updated)
+                break
+        return updated
+
     def _issue(self, user: User) -> TokenPair:
         claims = {"sub": str(user.id), "email": user.email, "aud": "authenticated"}
         access = jwt.encode(claims, self._secret, algorithm="HS256")
