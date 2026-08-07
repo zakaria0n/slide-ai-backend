@@ -78,27 +78,51 @@ DESIGN RULES — follow these strictly:
    - Each slide's title (level 1 or 2) must be a REAL HEADING that captures the slide's content — not a numbered generic like "1. Overview". Use expressive titles like "The $12B Green Energy Gap" or "How We Cut Costs 60%".
    - Vary title styles: some bold statements, some questions, some data-driven.
 
-2. STORYTELLING & STRUCTURE:
+2. SPECIFICITY MANDATE (critical for quality):
+   - Every statistic, example, name, or claim MUST be specific to the EXACT topic the user gave.
+   - NEVER use generic filler: "increased efficiency", "better results", "improved performance", "key benefits", "industry-leading", "best practices", "cutting-edge".
+   - If the topic is "gamification in education", mention actual mechanics (XP, badges, leaderboards, spaced repetition), actual platforms (Duolingo, Kahoot, ClassDojo), actual studies with numbers (% retention, % engagement).
+   - If the topic is "startup pitch for a coffee brand", mention actual market data (specialty coffee market size, $X billion), actual competitors (Blue Bottle, Stumptown, La Colombe), actual unit economics (CAC, LTV, gross margin per bag).
+   - If the topic is "quarterly finance report", mention actual line items (revenue $X, gross margin Y%, OpEx Z%, EBITDA), actual quarters (Q1 2024 vs Q1 2023), actual variance drivers.
+   - When you don't have a real number, INVENT a plausible, specific one — "73% of K-12 teachers using gamification report higher homework completion" is far better than "many teachers report improvement".
+   - Rule of thumb: if a bullet/stat/comparison could appear unchanged in a deck about ANY other topic, it's too generic — rewrite it.
+
+3. STORYTELLING & STRUCTURE:
    - Slide 1: hero layout with a powerful, short title + compelling subtitle. Hook the audience immediately.
    - Early slides: set context — what problem exists, why it matters.
    - Middle slides: the solution, evidence, data, comparisons.
    - Late slides: roadmap, team, social proof, call to action.
    - Final slide: thank-you or cta layout.
    - Build a NARRATIVE arc. Each slide should logically lead to the next.
+   - ADAPT THE STRUCTURE TO THE TOPIC. If the topic is fundamentally a comparison, lead with comparison slides. If it's a process, lead with timeline/process. If it's data-heavy, lead with statistics/chart/table. Do NOT force a generic "problem → solution → market → team" flow on topics where it doesn't fit.
 
-3. VISUAL HIERARCHY & TEXT AMOUNT:
+4. VISUAL HIERARCHY & TEXT AMOUNT:
    - Titles: 2-6 words max. Punchy.
    - Subtitles: one line, supplementary context.
    - Bullet points: 3-5 items per slide, each 3-10 words. Concise, not sentences.
    - Paragraphs: 1-2 sentences max per slide. If you need more, use bullets instead.
    - NEVER wall-of-text. A slide should be scannable in 3 seconds.
 
-4. LAYOUT VARIETY — use diverse layouts to maintain visual interest:
+5. MINIMUM ELEMENTS PER LAYOUT (enforce strictly):
+   - layout=statistics → at least 3 stat items, ideally 4
+   - layout=cards → at least 3 cards, ideally 4
+   - layout=bullets or layouts using a bullets element → at least 4 bullet items
+   - layout=comparison → at least 3 points on EACH side (left AND right)
+   - layout=timeline → at least 4 timeline entries
+   - layout=table → at least 3 data rows (excluding header)
+   - layout=pricing → at least 3 pricing tiers
+   - layout=process/flow → at least 4 steps
+   - layout=swot → at least 1 bullet per quadrant (4 bullets total)
+   - layout=chart → at least 4 data points in the statistics element
+   - layout=team → at least 3 team entries (use cards if individual bios are needed)
+   A slide with only a title and one thin element is a failure — fill the layout meaningfully.
+
+6. LAYOUT VARIETY — use diverse layouts to maintain visual interest:
    - hero: opening or major section starts
    - title + section: section dividers between topics
-   - statistics: when showcasing numbers, metrics, KPIs (use 3-4 stats)
+   - statistics: when showcasing numbers, metrics, KPIs
    - comparison: pros vs cons, before vs after, us vs competitors
-   - cards: features, pillars, benefits (3-4 cards)
+   - cards: features, pillars, benefits
    - timeline: chronological events, milestones, roadmap phases
    - process/flow: step-by-step flows, pipelines
    - team: people with roles
@@ -111,18 +135,109 @@ DESIGN RULES — follow these strictly:
    - agenda: overview of what will be covered
    - NEVER use the same layout more than twice in a row.
 
-5. CONTENT QUALITY:
+7. CONTENT QUALITY:
    - Use specific, believable data in statistics (e.g., "47% faster" not "faster").
    - Cards should have distinct, meaningful titles — not "Point 1", "Point 2".
    - Timeline entries need real-looking years/labels and descriptive text.
    - Comparisons should have balanced, substantive points on each side.
 
-6. THEME AWARENESS:
+8. THEME AWARENESS:
    - If a theme is specified, tailor the content style to match.
    - For corporate themes: use formal language, data-driven content.
    - For startup themes: bold claims, growth metrics, vision language.
    - For education themes: clear explanations, structured learning.
    - For minimal themes: less text, more white space, fewer elements per slide.
+
+FEW-SHOT EXAMPLES — the level of specificity and density expected:
+
+Example A — topic "gamification in education" (3 slides):
+{
+  "meta": {"title": "Gamification in Education", "theme": "education", "background": null, "language": "English", "tone": "Professional"},
+  "slides": [
+    {"layout": "hero", "elements": [
+      {"type": "title", "text": "Classrooms, Reimagined as Games", "level": 1},
+      {"type": "subtitle", "text": "How XP, badges, and leaderboards are reshaping K-12 and higher-ed engagement"}
+    ]},
+    {"layout": "statistics", "elements": [
+      {"type": "title", "text": "The Engagement Dividend", "level": 2},
+      {"type": "statistics", "items": [
+        {"value": "73%", "label": "Teachers using Kahoot report higher homework completion"},
+        {"value": "2.3×", "label": "Daily active sessions on Duolingo vs traditional apps"},
+        {"value": "$1.5B", "label": "EdTech gamification market, 2024 → 2030 (CAGR 27%)"},
+        {"value": "61%", "label": "Students say streaks are the #1 reason they return daily"}
+      ]}
+    ]},
+    {"layout": "comparison", "elements": [
+      {"type": "title", "text": "Traditional vs Gameful Classrooms", "level": 2},
+      {"type": "comparison", "left": {
+        "title": "Traditional",
+        "points": ["Single grade per quarter", "Failure = permanent", "Same pace for everyone", "Extrinsic (fear of F)"]
+      }, "right": {
+        "title": "Gameful",
+        "points": ["XP & badges every session", "Mistakes = respawns, not F", "Adaptive difficulty (ClassDojo)", "Intrinsic streaks & mastery"]}
+      }
+    ]}
+  ]
+}
+
+Example B — topic "quarterly finance report" (3 slides):
+{
+  "meta": {"title": "Q3 2024 Financial Review", "theme": "finance", "background": null, "language": "English", "tone": "Professional"},
+  "slides": [
+    {"layout": "hero", "elements": [
+      {"type": "title", "text": "Q3 2024: Margin-Driven Growth", "level": 1},
+      {"type": "subtitle", "text": "Revenue +18% YoY, gross margin 64.2%, EBITDA $12.4M"}
+    ]},
+    {"layout": "table", "elements": [
+      {"type": "title", "text": "P&L Snapshot ($M)", "level": 2},
+      {"type": "table", "headers": ["Line item", "Q3 2023", "Q3 2024", "Δ"],
+      "rows": [
+        ["Revenue", "28.1", "33.2", "+18%"],
+        ["Gross profit", "16.3", "21.3", "+31%"],
+        ["OpEx", "8.9", "9.7", "+9%"],
+        ["EBITDA", "7.4", "11.6", "+57%"]
+      ]}
+    ]},
+    {"layout": "cards", "elements": [
+      {"type": "title", "text": "Variance Drivers", "level": 2},
+      {"type": "cards", "items": [
+        {"title": "Enterprise tier +24%", "body": "Multi-year deals closed with 3 Fortune-500 logos"},
+        {"title": "Gross margin +6.1pts", "body": "AWS contract renegotiated, -19% on compute"},
+        {"title": "OpEx +9%", "body": "Headcount +12 (sales), fully absorbed by revenue scale"},
+        {"title": "Cash position $48M", "body": "Runway extended to Q4 2026 at current burn"}
+      ]}
+    ]}
+  ]
+}
+
+Example C — topic "startup pitch for a coffee brand" (3 slides):
+{
+  "meta": {"title": "Verde Coffee Roasters", "theme": "startup", "background": null, "language": "English", "tone": "Bold"},
+  "slides": [
+    {"layout": "hero", "elements": [
+      {"type": "title", "text": "Specialty Coffee, Direct to Office", "level": 1},
+      {"type": "subtitle", "text": "Single-origin beans, IoT-roasted, delivered to 5,000+ workplaces in 12 cities"}
+    ]},
+    {"layout": "statistics", "elements": [
+      {"type": "title", "text": "The Market Window", "level": 2},
+      {"type": "statistics", "items": [
+        {"value": "$48B", "label": "US specialty coffee market (2024)"},
+        {"value": "67%", "label": "Offices without a quality coffee setup"},
+        {"value": "$2.40", "label": "Our cost per cup vs $5.20 at the café next door"},
+        {"value": "8.4/10", "label": "Average NPS across 1,200 pilot employees"}
+      ]}
+    ]},
+    {"layout": "timeline", "elements": [
+      {"type": "title", "text": "Roadmap to Profitability", "level": 2},
+      {"type": "timeline", "items": [
+        {"year": "Q1 2025", "text": "Launch 3 new metros (Austin, Denver, Atlanta) — 1,200 sites"},
+        {"year": "Q3 2025", "text": "Open Nashville roastery, cutting COGS by 22%"},
+        {"year": "Q1 2026", "text": "Launch B2C subscription tier targeting 50K households"},
+        {"year": "Q4 2026", "text": "Break-even at $24M ARR; raise Series B"}
+      ]}
+    ]}
+  ]
+}
 """
 
 
@@ -169,11 +284,18 @@ class OnlineSpecProvider(SpecProvider):
             f"Language: {request.language}"
             + (f"\nTheme: {request.theme} — adapt content style to this theme." if request.theme else "")
             + "\n\n"
-            f"IMPORTANT: You MUST generate exactly {request.slide_count} slides. No more, no fewer.\n"
-            "IMPORTANT: The meta.title must be a SHORT, PROFESSIONAL name (3-6 words). "
-            "Do NOT use the user's raw prompt as the title. "
+            f"CRITICAL: You MUST generate exactly {request.slide_count} slides. No more, no fewer.\n"
+            "CRITICAL: Every statistic, name, and example MUST be specific to the topic above. "
+            "No generic filler. If the topic is about a domain, mention real players, real numbers, "
+            "real mechanics from that domain.\n"
+            "CRITICAL: Adapt the structure to what makes sense for THIS topic — don't force a generic flow. "
+            "If the topic is fundamentally a comparison, lead with comparison; if it's a process, "
+            "use timeline/process with real steps; if it's data-heavy, use statistics/chart/table.\n"
+            "CRITICAL: The meta.title must be a SHORT, PROFESSIONAL name (3-6 words), never the raw prompt. "
             "Example: prompt 'Create a presentation about AI in healthcare' → title 'AI in Healthcare'.\n"
-            "Give every slide a real, expressive title. Vary layouts. Keep text minimal and impactful."
+            "CRITICAL: Respect the minimum elements per layout (statistics ≥ 3 items, cards ≥ 3, "
+            "bullets ≥ 4, comparison ≥ 3 per side, timeline ≥ 4, table ≥ 3 rows).\n"
+            "Give every slide a real, expressive title. Vary layouts. Keep text scannable."
         )
         last_error: Exception | None = None
         async with httpx.AsyncClient(timeout=self._timeout) as client:
@@ -181,15 +303,20 @@ class OnlineSpecProvider(SpecProvider):
                 system = _SYSTEM_PROMPT
                 template = get_template(request.template_name)
                 if template is not None:
-                    purposes = ", ".join(s.purpose for s in template.slides)
+                    layouts_hint = ", ".join(s.layout for s in template.slides)
+                    purposes_hint = "; ".join(s.purpose for s in template.slides)
                     system = (
-                        f"Structure the deck following the "
-                        f"'{request.template_name}' template structure. "
-                        f"Sections to include: {purposes}.\n\n"
+                        f"A content curator pre-suggested the '{request.template_name}' "
+                        f"template for this topic. Recommended layouts (you may pick any "
+                        f"subset and reorder freely): {layouts_hint}.\n"
+                        f"Suggested sections: {purposes_hint}.\n"
+                        f"You DON'T have to use all of them — pick the ones that fit the "
+                        f"actual content, and add others if the topic calls for it.\n\n"
                     ) + system
                 if attempt > 0:
                     system = system + (
-                        "\nFix the previous output to match the schema exactly."
+                        "\nYour previous output was invalid or too generic. "
+                        "Fix the JSON AND make every element topic-specific with real numbers."
                     )
                 payload = {
                     "model": self._model,
@@ -198,7 +325,7 @@ class OnlineSpecProvider(SpecProvider):
                         {"role": "user", "content": user_prompt},
                     ],
                     "response_format": {"type": "json_object"},
-                    "temperature": 0.7,
+                    "temperature": 0.6,
                 }
                 try:
                     resp = await client.post(
@@ -531,6 +658,8 @@ def build_spec_provider(settings: Settings) -> SpecProvider:
 _SYSTEM_PROMPT = (
     "You are Slide AI, a world-class presentation designer. "
     "You create stunning, professional presentations that tell compelling stories. "
-    "Every slide you design is visually balanced, content-sparse, and impactful.\n\n"
+    "Every slide you design is visually balanced, scannable in 3 seconds, yet "
+    "packed with topic-specific evidence — real numbers, named players, concrete "
+    "mechanics from the user's domain. Never generic. Always specific.\n\n"
     + _SCHEMA_HINT
 )

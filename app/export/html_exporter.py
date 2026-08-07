@@ -200,13 +200,18 @@ def render_spec_html(spec: PresentationSpec, theme: ThemeTokens, animate: bool =
         slide_theme_name = s.get("theme")
         t = tokens_for(slide_theme_name) if slide_theme_name else global_t
         g = _group(s)
-        body = _render_elements(g.get("title", []) + g.get("subtitle", []) + g.get("paragraph", []), t)
+        # Title is rendered inside _render_complex (which prepends it). Only
+        # subtitle + paragraph go here so the title isn't emitted twice.
+        body = _render_elements(g.get("subtitle", []) + g.get("paragraph", []), t)
         body += _render_complex(s, g, t)
         body += _render_elements([e for et in ("bullets", "quote", "code", "table", "image", "icon", "diagram") for e in g.get(et, [])], t, i0=10)
         bg = s.get("background") or t.bg
         slides_html.append(
-            f'<section class="slide print-break" style="width:100%;aspect-ratio:16/9;max-height:100%;background:{bg};border-radius:{t.radius_lg};border:1px solid {t.border};padding:clamp(24px,4vw,64px);padding-top:clamp(24px,4vw,64px);color:{t.text};box-sizing:border-box;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-start">'
-            f'<div style="margin-top:24px">{body}</div>'
+            f'<section class="slide print-break" data-slide '
+            f'style="background:{bg};border-radius:{t.radius_lg};border:1px solid {t.border};'
+            f'padding:clamp(24px,4vw,64px);color:{t.text};box-sizing:border-box;overflow:hidden;'
+            f'display:flex;flex-direction:column;justify-content:flex-start">'
+            f'{body}'
             f'</section>'
         )
 
@@ -228,26 +233,202 @@ def render_spec_html(spec: PresentationSpec, theme: ThemeTokens, animate: bool =
 
     anim_css = _anim_css() if animate else ""
     font_links_html = "\n".join(sorted(font_links))
+    title_escaped = _esc(getattr(meta, "title", "Slide AI Presentation"))
+
+    # CSS for the navigation/presentation shell. Slides are sized to fit the
+    # viewport while keeping 16:9 (contain, not cover — exports don't crop).
+    # All slides are present in the DOM; only .active is visible. Print mode
+    # overrides everything to stack the slides for PDF.
+    presentation_css = """
+  html, body { height: 100%; margin: 0; background: #000; overflow: hidden; }
+  .stage {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: #000;
+  }
+  .slide {
+    position: absolute;
+    width: min(100vw, 177.78vh);
+    height: min(100vh, 56.25vw);
+    box-shadow: 0 30px 90px rgba(0,0,0,0.5);
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 0.35s ease;
+  }
+  .slide.active { visibility: visible; opacity: 1; }
+  .controls {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 20px;
+    background: linear-gradient(to top, rgba(0,0,0,0.65), transparent);
+    color: #c0c0d8;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    z-index: 10;
+  }
+  .ctrl-btn {
+    padding: 8px 14px; border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(20,20,32,0.55); color: #fff;
+    font-size: 14px; cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+  .ctrl-btn:hover { background: rgba(40,40,56,0.7); }
+  .ctrl-btn:active { transform: scale(0.97); }
+  .ctrl-btn:disabled { color: #555; cursor: default; opacity: 0.5; }
+  .counter {
+    font-size: 13px; font-variant-numeric: tabular-nums;
+    color: rgba(255,255,255,0.85); white-space: nowrap;
+  }
+  .progress {
+    flex: 1; height: 4px; border-radius: 2px; overflow: hidden;
+    background: rgba(255,255,255,0.2); min-width: 80px;
+  }
+  .progress > span {
+    display: block; height: 100%;
+    background: linear-gradient(90deg, #7c6aff, #ff6ac1);
+    transition: width 0.3s ease-out;
+  }
+  @media print {
+    html, body { height: auto; overflow: visible; background: #fff; }
+    .stage { position: static; display: block; background: #fff; }
+    .slide {
+      position: static; width: 100%; height: auto; aspect-ratio: 16/9;
+      visibility: visible; opacity: 1; box-shadow: none; page-break-after: always;
+    }
+    .controls { display: none !important; }
+    [class^="anim-"] { animation: none !important; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    [class^="anim-"] { animation: none !important; transition: none !important; }
+    .slide { transition: none !important; }
+  }
+"""
+
+    # Vanilla JS — must work in file:// (no modules, no fetch). Animations
+    # are replayed on every slide change by cloning the slide's innerHTML,
+    # which forces the browser to restart any CSS animation on the new nodes.
+    presentation_js = """
+(function () {
+  var slides = Array.prototype.slice.call(document.querySelectorAll('[data-slide]'));
+  var total = slides.length;
+  if (total === 0) return;
+  var current = 0;
+  var counterEl = document.getElementById('counter');
+  var prevBtn = document.getElementById('prev');
+  var nextBtn = document.getElementById('next');
+  var fsBtn = document.getElementById('fullscreen');
+  var progressBar = document.getElementById('progress-bar');
+  var stage = document.querySelector('.stage');
+
+  // Stash each slide's original HTML so we can reset+replay animations by
+  // re-injecting it (cloning nodes restarts CSS animations).
+  slides.forEach(function (s) { s.setAttribute('data-original', s.innerHTML); });
+
+  function show(idx) {
+    if (idx < 0 || idx >= total) return;
+    // Hide all, show active.
+    slides.forEach(function (s, i) {
+      if (i === idx) {
+        s.classList.add('active');
+        // Replay animations: re-inject original HTML → fresh DOM nodes →
+        // animations start from initial state again.
+        s.innerHTML = s.getAttribute('data-original');
+      } else {
+        s.classList.remove('active');
+      }
+    });
+    current = idx;
+    if (counterEl) counterEl.textContent = (idx + 1) + ' / ' + total;
+    if (prevBtn) prevBtn.disabled = idx === 0;
+    if (nextBtn) nextBtn.disabled = idx === total - 1;
+    if (progressBar) progressBar.style.width = (((idx + 1) / total) * 100) + '%';
+  }
+  function next() { if (current < total - 1) show(current + 1); }
+  function prev() { if (current > 0) show(current - 1); }
+
+  if (prevBtn) prevBtn.addEventListener('click', function (e) { e.stopPropagation(); prev(); });
+  if (nextBtn) nextBtn.addEventListener('click', function (e) { e.stopPropagation(); next(); });
+  if (fsBtn) fsBtn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    if (!document.fullscreenElement) {
+      (document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen || function(){}).call(document.documentElement);
+    } else {
+      (document.exitFullscreen || document.webkitExitFullscreen || function(){}).call(document);
+    }
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+    switch (e.key) {
+      case 'ArrowRight': case 'PageDown': case ' ':
+        e.preventDefault(); next(); break;
+      case 'ArrowLeft': case 'PageUp':
+        e.preventDefault(); prev(); break;
+      case 'Home':
+        e.preventDefault(); show(0); break;
+      case 'End':
+        e.preventDefault(); show(total - 1); break;
+      case 'f': case 'F':
+        e.preventDefault(); if (fsBtn) fsBtn.click(); break;
+    }
+  });
+
+  // Click zones: left third = prev, right two-thirds = next.
+  // Ignore clicks that originate from the controls bar.
+  if (stage) {
+    stage.addEventListener('click', function (e) {
+      if (e.target.closest('.controls') || e.target.closest('.ctrl-btn')) return;
+      var rect = stage.getBoundingClientRect();
+      var x = (e.clientX - rect.left) / rect.width;
+      if (x < 0.33) prev(); else next();
+    });
+    // Touch swipe
+    var touchX = null;
+    stage.addEventListener('touchstart', function (e) {
+      touchX = e.changedTouches[0] ? e.changedTouches[0].clientX : null;
+    }, { passive: true });
+    stage.addEventListener('touchend', function (e) {
+      if (touchX === null) return;
+      var dx = (e.changedTouches[0] ? e.changedTouches[0].clientX : 0) - touchX;
+      if (Math.abs(dx) > 50) { if (dx < 0) next(); else prev(); }
+      touchX = null;
+    }, { passive: true });
+  }
+
+  show(0);
+})();
+"""
+
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>{_esc(getattr(meta, 'title', 'Slide AI Presentation'))}</title>
+<title>{title_escaped}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 {font_links_html}
 <style>
   * {{ box-sizing: border-box; }}
-  body {{ margin:0; background:{global_t.bg}; font-family:{global_t.font_body}; }}
-  .deck {{ display:flex; flex-direction:column; gap:40px; padding:40px; align-items:center; }}
-  {anim_css}
-  @media print {{
-    body {{ background:#fff; }}
-    .deck {{ gap:0; padding:0; }}
-    .print-break {{ page-break-after: always; break-after: page; }}
-    [class^="anim-"] {{ animation: none !important; }}
-  }}
+  body {{ font-family:{global_t.font_body}; }}
+{anim_css}
+{presentation_css}
 </style></head>
-<body><div class="deck">{"".join(slides_html)}</div></body></html>"""
+<body>
+  <div class="stage">
+    {"".join(slides_html)}
+  </div>
+  <div class="controls">
+    <button class="ctrl-btn" id="prev" title="Previous (←)">&lsaquo;</button>
+    <span class="counter" id="counter">1 / {len(slides_html)}</span>
+    <div class="progress"><span id="progress-bar" style="width:0%"></span></div>
+    <button class="ctrl-btn" id="fullscreen" title="Fullscreen (F)">&#x26F6;</button>
+    <button class="ctrl-btn" id="next" title="Next (→)">&rsaquo;</button>
+  </div>
+  <script>
+{presentation_js}
+  </script>
+</body></html>"""
 
 
 class HtmlExportStrategy(ExportStrategy):

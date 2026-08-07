@@ -1,7 +1,10 @@
 """Template families for structured slide generation.
 
-Each family defines a sequence of slides with layout hints so the spec
-generator (or template override) can produce a coherent deck structure.
+Each family defines a *pool of recommended slides* (layout + purpose hints)
+that the spec generator can pick from. The pool is NOT a rigid sequence —
+the AI is free to choose any subset and reorder slides based on what makes
+sense for the actual topic. ``classify_keywords`` drive auto-selection in
+``app.templates.selector.select_template``.
 """
 from __future__ import annotations
 
@@ -20,6 +23,9 @@ class TemplateFamily:
     name: str
     description: str
     classify_keywords: list[str] = field(default_factory=list)
+    # Recommended pool — order is a suggestion, not a contract. The AI may
+    # use any subset in any order. element_hints document the expected
+    # element composition for that slide kind.
     slides: list[TemplateSlide] = field(default_factory=list)
 
 
@@ -27,7 +33,11 @@ TEMPLATES: list[TemplateFamily] = [
     TemplateFamily(
         name="startup_pitch",
         description="Standard investor pitch deck structure",
-        classify_keywords=["startup", "pitch", "investor", "funding", "venture", "series", "seed", "raise"],
+        classify_keywords=[
+            "startup", "pitch", "investor", "funding", "venture", "series",
+            "seed", "raise", "valuation", "pre-seed", "series a", "series b",
+            "vc", "capital", "equity", "saas startup", "burn rate", "runway",
+        ],
         slides=[
             TemplateSlide("hero", "Cover", ["title", "subtitle"]),
             TemplateSlide("section", "Problem", ["title", "paragraph"]),
@@ -44,7 +54,12 @@ TEMPLATES: list[TemplateFamily] = [
     TemplateFamily(
         name="education",
         description="Educational lecture or course overview",
-        classify_keywords=["education", "lecture", "course", "lesson", "teaching", "academic", "university", "school", "training"],
+        classify_keywords=[
+            "education", "lecture", "course", "lesson", "teaching", "academic",
+            "university", "school", "training", "tutorial", "workshop",
+            "curriculum", "pedagogy", "students", "k-12", "higher ed",
+            "classroom", "gamification in education", "learning",
+        ],
         slides=[
             TemplateSlide("hero", "Title Slide", ["title", "subtitle"]),
             TemplateSlide("agenda", "Outline", ["title", "agenda"]),
@@ -61,7 +76,12 @@ TEMPLATES: list[TemplateFamily] = [
     TemplateFamily(
         name="finance",
         description="Financial report or earnings deck",
-        classify_keywords=["finance", "financial", "earnings", "revenue", "profit", "budget", "quarterly", "annual report", "fiscal"],
+        classify_keywords=[
+            "finance", "financial", "earnings", "revenue", "profit", "budget",
+            "quarterly", "annual report", "fiscal", "p&l", "ebitda", "cash flow",
+            "kpi", "margin", "forecast", "valuation model", "investor relations",
+            "10-k", "10-q", "expenses",
+        ],
         slides=[
             TemplateSlide("hero", "Report Title", ["title", "subtitle"]),
             TemplateSlide("statistics", "Key Metrics", ["title", "statistics"]),
@@ -78,7 +98,11 @@ TEMPLATES: list[TemplateFamily] = [
     TemplateFamily(
         name="medical",
         description="Medical research or clinical presentation",
-        classify_keywords=["medical", "clinical", "health", "diagnosis", "treatment", "research", "patient", "drug", "therapy"],
+        classify_keywords=[
+            "medical", "clinical", "health", "diagnosis", "treatment", "research",
+            "patient", "drug", "therapy", "trial", "pharma", "biotech",
+            "hospital", "diagnostic", "epidemiology", "fda", "ehr",
+        ],
         slides=[
             TemplateSlide("hero", "Study Title", ["title", "subtitle"]),
             TemplateSlide("bullets", "Background", ["title", "bullets"]),
@@ -95,7 +119,12 @@ TEMPLATES: list[TemplateFamily] = [
     TemplateFamily(
         name="marketing",
         description="Marketing campaign or brand strategy",
-        classify_keywords=["marketing", "campaign", "brand", "advertising", "social media", "content strategy", "growth", "audience"],
+        classify_keywords=[
+            "marketing", "campaign", "brand", "advertising", "social media",
+            "content strategy", "growth", "audience", "seo", "sem", "adwords",
+            "facebook ads", "instagram", "tiktok", "email marketing",
+            "funnel", "conversion", "positioning", "go-to-market",
+        ],
         slides=[
             TemplateSlide("hero", "Campaign Overview", ["title", "subtitle"]),
             TemplateSlide("statistics", "Market Landscape", ["title", "statistics"]),
@@ -112,7 +141,11 @@ TEMPLATES: list[TemplateFamily] = [
     TemplateFamily(
         name="product",
         description="Product launch or feature demo deck",
-        classify_keywords=["product", "launch", "feature", "release", "update", "demo", "prototype", "mvp", "roadmap"],
+        classify_keywords=[
+            "product", "launch", "feature", "release", "update", "demo",
+            "prototype", "mvp", "roadmap", "saas", "platform", "app",
+            "ux", "ui", "release notes", "beta", "ga", "onboarding",
+        ],
         slides=[
             TemplateSlide("hero", "Product Title", ["title", "subtitle"]),
             TemplateSlide("image-left", "Product Overview", ["title", "image", "paragraph"]),
@@ -129,7 +162,11 @@ TEMPLATES: list[TemplateFamily] = [
     TemplateFamily(
         name="research",
         description="Research findings or academic paper presentation",
-        classify_keywords=["research", "paper", "study", "findings", "hypothesis", "experiment", "analysis", "publication"],
+        classify_keywords=[
+            "research", "paper", "study", "findings", "hypothesis",
+            "experiment", "analysis", "publication", "thesis", "dissertation",
+            "peer review", "journal", "conference", "methodology",
+        ],
         slides=[
             TemplateSlide("hero", "Paper Title", ["title", "subtitle"]),
             TemplateSlide("bullets", "Abstract / Introduction", ["title", "bullets"]),
