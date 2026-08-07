@@ -1,6 +1,6 @@
 """Application configuration loaded from environment variables.
 
-All secrets (Supabase keys, AI provider key, DB password) are read from the
+All secrets (Supabase keys, AI provider key) are read from the
 environment via pydantic-settings. A `.env` file is supported for local dev.
 """
 from __future__ import annotations
@@ -35,22 +35,6 @@ class Settings(BaseSettings):
     project_name: str = "Slide AI"
     api_title: str = "Slide AI API"
     api_version: str = "1.0.0"
-
-    # --- Database (Supabase PostgreSQL) ---
-    # Full SQLAlchemy URL takes precedence when provided.
-    database_url: str | None = Field(
-        default=None,
-        description="Full PostgreSQL/SQLAlchemy connection URL (overrides the pieces below).",
-    )
-    db_host: str = "localhost"
-    db_port: int = 5432
-    db_name: str = "postgres"
-    db_user: str = "postgres"
-    db_password: str = ""
-    db_pool_size: int = 10
-    db_max_overflow: int = 20
-    db_pool_timeout: int = 30
-    db_echo: bool = False
 
     # --- Supabase ---
     supabase_url: str = ""
@@ -95,20 +79,6 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
-
-    @property
-    def sqlalchemy_database_uri(self) -> str:
-        """Return the SQLAlchemy database URL.
-
-        Uses the explicit ``database_url`` when set, otherwise assembles a
-        Supabase-style ``postgresql+psycopg://`` URL from its components.
-        """
-        if self.database_url:
-            return self.database_url
-        return (
-            f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
-            f"@{self.db_host}:{self.db_port}/{self.db_name}"
-        )
 
     @property
     def displayed_provider_name(self) -> str:

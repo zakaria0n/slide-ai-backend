@@ -105,20 +105,43 @@ class ImageElement(_BaseElement):
     caption: str | None = None
 
 
+# --- Inner element payloads -------------------------------------------------
+
+
+class CardItem(BaseModel):
+    title: str = ""
+    body: str = ""
+
+
+class StatItem(BaseModel):
+    value: str = ""
+    label: str = ""
+
+
+class TimelineItem(BaseModel):
+    year: str = ""
+    text: str = ""
+
+
+class ComparisonSide(BaseModel):
+    title: str = ""
+    points: list[str] = Field(default_factory=list)
+
+
 class CardsElement(_BaseElement):
     type: Literal["cards"] = "cards"
-    items: list[dict[str, Any]] = Field(default_factory=list)
+    items: list[CardItem] = Field(default_factory=list)
 
 
 class TimelineElement(_BaseElement):
     type: Literal["timeline"] = "timeline"
-    items: list[dict[str, Any]] = Field(default_factory=list)
+    items: list[TimelineItem] = Field(default_factory=list)
 
 
 class ComparisonElement(_BaseElement):
     type: Literal["comparison"] = "comparison"
-    left: dict[str, Any] = Field(default_factory=dict)
-    right: dict[str, Any] = Field(default_factory=dict)
+    left: ComparisonSide = Field(default_factory=ComparisonSide)
+    right: ComparisonSide = Field(default_factory=ComparisonSide)
 
 
 class QuoteElement(_BaseElement):
@@ -129,7 +152,7 @@ class QuoteElement(_BaseElement):
 
 class StatisticsElement(_BaseElement):
     type: Literal["statistics"] = "statistics"
-    items: list[dict[str, Any]] = Field(default_factory=list)
+    items: list[StatItem] = Field(default_factory=list)
 
 
 class CodeElement(_BaseElement):

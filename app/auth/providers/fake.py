@@ -77,7 +77,7 @@ class FakeAuthProvider(AuthProvider):
         raise InvalidCredentialsError("Invalid or expired session")
 
     def _issue(self, user: User) -> TokenPair:
-        claims = {"sub": str(user.id), "email": user.email}
+        claims = {"sub": str(user.id), "email": user.email, "aud": "authenticated"}
         access = jwt.encode(claims, self._secret, algorithm="HS256")
         refresh = jwt.encode(claims, self._secret, algorithm="HS256")
         self._sessions[access] = user.id

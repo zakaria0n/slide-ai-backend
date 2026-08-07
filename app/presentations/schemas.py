@@ -1,7 +1,6 @@
 """Pydantic request/response schemas for the presentations API."""
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from uuid import UUID
 
@@ -51,34 +50,9 @@ class PresentationListResponse(BaseModel):
     total: int
 
 
-class SlideResponse(BaseModel):
-    """A stored slide returned in a presentation detail view."""
-
-    index: int
-    title: str
-    bullets: list[str]
-    notes: str | None
-    layout: str
-
-    @classmethod
-    def from_content(cls, index: int, content: str) -> "SlideResponse":
-        try:
-            data = json.loads(content)
-        except (json.JSONDecodeError, ValueError):
-            data = {}
-        return cls(
-            index=index,
-            title=str(data.get("title", "")),
-            bullets=[str(b) for b in data.get("bullets", [])],
-            notes=(data.get("notes") if isinstance(data.get("notes"), str) else None),
-            layout=str(data.get("layout", "title-bullets")),
-        )
-
-
 __all__ = [
     "CreatePresentationRequest",
     "RenamePresentationRequest",
     "PresentationResponse",
     "PresentationListResponse",
-    "SlideResponse",
 ]

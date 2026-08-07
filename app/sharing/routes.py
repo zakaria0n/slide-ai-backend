@@ -15,21 +15,17 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
+from supabase import AsyncClient
 
-from app.core.exceptions import NotFoundError, UnauthorizedError
-from app.db.dependencies import Database
-from app.db.repositories.presentation import PresentationRepository
-from app.db.repositories.presentation_share import PresentationShareRepository
+import app.db as db
+from app.api.deps import owner_id, supabase
+from app.core.exceptions import ForbiddenError, NotFoundError
 from app.generation.spec import PresentationSpec
-from app.models.presentation import Presentation
-from app.models.presentation_share import PresentationShare
 from app.sharing.password import generate_token, hash_password, verify_password
 
 router = APIRouter(tags=["sharing"])
 
-
-def _db(request: Request) -> Database:
-    return request.app.state.db
+_supabase = supabase
 
 
 # --- request / response schemas ---
@@ -65,107 +61,91 @@ class SharedSpecResponse(BaseModel):
 # --- owner-scoped routes ---
 
 
-from fastapi.security import HTTPBearer  # noqa: E402
-
-_bearer_dep = HTTPBearer(auto_error=False)
+_get_owner_id = owner_id
 
 
-def _extract_owner_token(
-    creds=Depends(_bearer_dep),
-) -> str:
-    if creds is None or not creds.credentials:
-        raise UnauthorizedError("Missing authentication token")
-    return creds.credentials
+async def _require_presentation(
+    supabase: AsyncClient, presentation_id: UUID, user_id: UUID, *, write: bool = False
+) -> dict:
+    """Return the presentation row if the caller may access it.
 
-
-def _get_owner_id(request: Request, token: str = Depends(_extract_owner_token)) -> UUID:
-    verifier = getattr(request.app.state, "jwt_verifier", None)
-    if verifier is None:
-        raise UnauthorizedError("Authentication is not configured")
-    return verifier.user_id(token)
+    Access is granted when the caller owns the presentation or is a member
+    of a workspace that contains it. ``write=True`` additionally requires
+    an ``owner``/``admin``/``editor`` role.
+    """
+    row = await db.get_presentation(supabase, presentation_id)
+    if row is None:
+        raise NotFoundError("Presentation not found")
+    role = await db.get_presentation_access_role(supabase, presentation_id, user_id)
+    if role is None:
+        raise NotFoundError("Presentation not found")
+    if write and role not in ("owner", "admin", "editor"):
+        raise ForbiddenError("You have read-only access to this presentation")
+    return row
 
 
 @router.post("/presentations/{presentation_id}/shares", response_model=ShareResponse, status_code=201)
 async def create_share(
     presentation_id: UUID,
     req: CreateShareRequest,
-    request: Request,
     owner_id: UUID = Depends(_get_owner_id),
-    db: Database = Depends(_db),
+    supabase: AsyncClient = Depends(_supabase),
 ) -> ShareResponse:
     """Create a new share link for a presentation."""
-    session = db.session_factory()
-    try:
-        presentation = await PresentationRepository(session).get_owned(presentation_id, owner_id)
-        if presentation is None:
-            raise NotFoundError("Presentation not found")
+    await _require_presentation(supabase, presentation_id, owner_id, write=True)
 
-        token = generate_token()
-        password_hash_val = hash_password(req.password) if req.visibility == "password" and req.password else None
-        expires_at_val = None
-        if req.expires_at:
-            try:
-                expires_at_val = datetime.fromisoformat(req.expires_at)
-            except ValueError:
-                raise HTTPException(status_code=422, detail="Invalid expires_at format")
+    token = generate_token()
+    password_hash_val = hash_password(req.password) if req.visibility == "password" and req.password else None
+    expires_at_val = None
+    if req.expires_at:
+        try:
+            expires_at_val = datetime.fromisoformat(req.expires_at)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid expires_at format")
 
-        share = PresentationShare(
-            presentation_id=presentation_id,
-            owner_id=owner_id,
-            token=token,
-            visibility=req.visibility,
-            password_hash=password_hash_val,
-            expires_at=expires_at_val,
-            permission=req.permission,
-            embed_allowed=req.embed_allowed,
-        )
-        session.add(share)
-        await session.commit()
-        await session.refresh(share)
-    except Exception:
-        await session.rollback()
-        raise
-    finally:
-        await session.close()
+    share = await db.create_share(
+        supabase,
+        presentation_id=str(presentation_id),
+        owner_id=str(owner_id),
+        token=token,
+        visibility=req.visibility,
+        password_hash=password_hash_val,
+        expires_at=expires_at_val.isoformat() if expires_at_val else None,
+        permission=req.permission,
+        embed_allowed=req.embed_allowed,
+    )
 
     return ShareResponse(
-        id=str(share.id),
-        token=share.token,
-        visibility=share.visibility,
-        permission=share.permission,
-        embed_allowed=share.embed_allowed,
-        expires_at=share.expires_at.isoformat() if share.expires_at else None,
-        created_at=share.created_at.isoformat(),
+        id=str(share["id"]),
+        token=share["token"],
+        visibility=share["visibility"],
+        permission=share["permission"],
+        embed_allowed=share["embed_allowed"],
+        expires_at=share.get("expires_at"),
+        created_at=share["created_at"],
     )
 
 
 @router.get("/presentations/{presentation_id}/shares", response_model=ShareListResponse)
 async def list_shares(
     presentation_id: UUID,
-    request: Request,
     owner_id: UUID = Depends(_get_owner_id),
-    db: Database = Depends(_db),
+    supabase: AsyncClient = Depends(_supabase),
 ) -> ShareListResponse:
     """List all share links for a presentation."""
-    session = db.session_factory()
-    try:
-        presentation = await PresentationRepository(session).get_owned(presentation_id, owner_id)
-        if presentation is None:
-            raise NotFoundError("Presentation not found")
-        shares = await PresentationShareRepository(session).list_for_presentation(presentation_id)
-    finally:
-        await session.close()
+    await _require_presentation(supabase, presentation_id, owner_id)
+    shares = await db.list_shares(supabase, presentation_id)
 
     return ShareListResponse(
         shares=[
             ShareResponse(
-                id=str(s.id),
-                token=s.token,
-                visibility=s.visibility,
-                permission=s.permission,
-                embed_allowed=s.embed_allowed,
-                expires_at=s.expires_at.isoformat() if s.expires_at else None,
-                created_at=s.created_at.isoformat(),
+                id=str(s["id"]),
+                token=s["token"],
+                visibility=s["visibility"],
+                permission=s["permission"],
+                embed_allowed=s["embed_allowed"],
+                expires_at=s.get("expires_at"),
+                created_at=s["created_at"],
             )
             for s in shares
         ]
@@ -175,34 +155,36 @@ async def list_shares(
 @router.delete("/shares/{token}", status_code=204)
 async def delete_share(
     token: str,
-    request: Request,
     owner_id: UUID = Depends(_get_owner_id),
-    db: Database = Depends(_db),
+    supabase: AsyncClient = Depends(_supabase),
 ) -> None:
     """Revoke a share link."""
-    session = db.session_factory()
-    try:
-        share = await PresentationShareRepository(session).get_by_token(token)
-        if share is None or share.owner_id != owner_id:
-            raise NotFoundError("Share not found")
-        await session.delete(share)
-        await session.commit()
-    except Exception:
-        await session.rollback()
-        raise
-    finally:
-        await session.close()
+    share = await db.get_share_by_token(supabase, token)
+    if share is None:
+        raise NotFoundError("Share not found")
+    await _require_presentation(
+        supabase, UUID(share["presentation_id"]), owner_id, write=True
+    )
+    await db.delete_share(supabase, token)
 
 
 # --- public routes (no auth) ---
 
 
-def _validate_share(share: PresentationShare | None) -> None:
+def _validate_share(share: dict | None) -> None:
     if share is None:
         raise NotFoundError("Share not found")
-    if share.expires_at and share.expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=410, detail="Share link has expired")
-    if share.visibility == "private":
+    if share.get("expires_at"):
+        try:
+            exp = datetime.fromisoformat(share["expires_at"])
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            if exp < datetime.now(timezone.utc):
+                raise HTTPException(status_code=410, detail="Share link has expired")
+        except (ValueError, TypeError):
+            # Fail closed: a malformed expiry must not grant access.
+            raise HTTPException(status_code=410, detail="Share link has expired")
+    if share["visibility"] == "private":
         raise NotFoundError("Share not found")
 
 
@@ -210,24 +192,19 @@ def _validate_share(share: PresentationShare | None) -> None:
 async def get_shared(
     token: str,
     password: str | None = Query(None),
-    db: Database = Depends(_db),
+    supabase: AsyncClient = Depends(_supabase),
 ) -> SharedSpecResponse:
     """Access a shared presentation (no auth required)."""
-    session = db.session_factory()
-    try:
-        share = await PresentationShareRepository(session).get_by_token(token)
-        _validate_share(share)
+    share = await db.get_share_by_token(supabase, token)
+    _validate_share(share)
 
-        if share.visibility == "password":
-            if not password or not verify_password(password, share.password_hash):
-                raise HTTPException(status_code=403, detail="Invalid password")
+    if share["visibility"] == "password":
+        if not password or not verify_password(password, share.get("password_hash")):
+            raise HTTPException(status_code=403, detail="Invalid password")
 
-        presentation = await session.get(Presentation, share.presentation_id)
-        if presentation is None:
-            raise NotFoundError("Presentation not found")
+    presentation = await db.get_presentation(supabase, UUID(share["presentation_id"]))
+    if presentation is None:
+        raise NotFoundError("Presentation not found")
 
-        spec = PresentationSpec.model_validate(presentation.spec)
-    finally:
-        await session.close()
-
-    return SharedSpecResponse(spec=spec, title=presentation.title)
+    spec = PresentationSpec.model_validate(presentation["spec"])
+    return SharedSpecResponse(spec=spec, title=presentation["title"])

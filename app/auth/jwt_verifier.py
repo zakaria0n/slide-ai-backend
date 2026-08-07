@@ -1,21 +1,23 @@
 """Local verification of Supabase-issued JWT access tokens.
 
-Supabase signs access tokens with HS256 using the project JWT secret.
-Verifying them locally (no network round-trip) keeps the request path
-fast and removes a dependency on the auth service for every request.
+Supabase signs access tokens with ES256 (asymmetric, JWKS) on newer
+projects, or HS256 (symmetric secret) on older/legacy projects.
 
-The application only reads the ``sub`` claim (user id) and optionally
-``email``. Token issuance remains the provider's responsibility.
+This verifier supports both: it first tries ES256 via the project's
+JWKS endpoint, and falls back to HS256 when the token header says so.
+JWKS keys are cached in memory by ``PyJWKClient``.
 """
 from __future__ import annotations
 
 import jwt
+from jwt import PyJWKClient
 from jwt.exceptions import (
     DecodeError,
-    InvalidKeyError,
     ExpiredSignatureError,
+    InvalidAudienceError,
     InvalidSignatureError,
     InvalidTokenError,
+    InvalidKeyError,
 )
 from uuid import UUID
 
@@ -24,35 +26,64 @@ from app.core.exceptions import UnauthorizedError
 
 
 class JWTVerifier:
-    """Verifies HS256 JWTs issued by Supabase."""
+    """Verifies Supabase JWTs (ES256 via JWKS or HS256 via secret)."""
 
-    def __init__(self, secret: str, *, leeway_seconds: int = 10) -> None:
+    def __init__(
+        self,
+        secret: str,
+        supabase_url: str = "",
+        *,
+        leeway_seconds: int = 10,
+    ) -> None:
         if not secret:
             raise ValueError("JWT secret is required to verify tokens")
-        # HS256 verifies against the raw secret string.
         self._secret = secret
+        self._supabase_url = supabase_url.rstrip("/")
         self._leeway = leeway_seconds
+
+        if self._supabase_url:
+            jwks_uri = f"{self._supabase_url}/auth/v1/.well-known/jwks.json"
+            self._jwks_client = PyJWKClient(jwks_uri, cache_keys=True)
+        else:
+            self._jwks_client = None
+
+    # --- public API ---
 
     def _verify(self, token: str) -> dict[str, object]:
         """Return the decoded claims, or raise UnauthorizedError."""
         try:
-            claims = jwt.decode(
-                token,
-                self._secret,  # type: ignore[arg-type]
-                algorithms=["HS256"],
-                options={"require": ["sub"]},
-                leeway=self._leeway,
-            )
+            header = jwt.get_unverified_header(token)
+            alg = header.get("alg", "HS256")
+            kid = header.get("kid")
+
+            if alg == "ES256" and kid and self._jwks_client:
+                key = self._jwks_client.get_signing_key_from_jwt(token).key
+                claims = jwt.decode(
+                    token,
+                    key,
+                    algorithms=["ES256"],
+                    audience="authenticated",
+                    options={"require": ["sub"]},
+                    leeway=self._leeway,
+                )
+            else:
+                claims = jwt.decode(
+                    token,
+                    self._secret,
+                    algorithms=["HS256"],
+                    audience="authenticated",
+                    options={"require": ["sub"]},
+                    leeway=self._leeway,
+                )
         except ExpiredSignatureError as exc:
             raise UnauthorizedError("Session expired") from exc
-        except (InvalidSignatureError, InvalidKeyError, DecodeError) as exc:
+        except (InvalidSignatureError, InvalidKeyError, DecodeError, InvalidAudienceError) as exc:
             raise UnauthorizedError("Invalid token") from exc
         except InvalidTokenError as exc:
             raise UnauthorizedError("Malformed token") from exc
         return claims
 
     def user_id(self, token: str) -> UUID:
-        # Verify once and reuse the decoded claims.
         claims = self._verify(token)
         raw = str(claims.get("sub", ""))
         try:
@@ -63,14 +94,15 @@ class JWTVerifier:
     def to_user(self, token: str) -> User:
         """Build a lightweight User from token claims (no provider call)."""
         claims = self._verify(token)
-        uid = self.user_id_from(claims)
+        uid = self._user_id_from(claims)
         email = str(claims.get("email", ""))
         meta: dict[str, object] = {}
         if "full_name" in claims:
             meta["full_name"] = claims["full_name"]
         return User(id=uid, email=email, metadata=meta)
 
-    def user_id_from(self, claims: dict[str, object]) -> UUID:
+    @staticmethod
+    def _user_id_from(claims: dict[str, object]) -> UUID:
         raw = str(claims.get("sub", ""))
         try:
             return UUID(raw)

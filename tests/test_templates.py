@@ -4,44 +4,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.config import Settings
-from app.main import create_app
 from app.templates.selector import select_template
-
-SECRET = "test-secret"
-
-
-@pytest.fixture
-def client(tmp_path) -> TestClient:
-    db_file = tmp_path / "test_templates.db"
-    settings = Settings(
-        _env_file=None,
-        app_env="test",
-        cors_allowed_origins=["http://localhost:5173"],
-        supabase_jwt_secret=SECRET,
-        database_url=f"sqlite+aiosqlite:///{db_file}",
-    )
-    app = create_app(settings)
-
-    import asyncio
-    from sqlalchemy.ext.asyncio import create_async_engine
-
-    engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}")
-    loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(_ensure_schema(engine))
-    finally:
-        loop.run_until_complete(engine.dispose())
-        loop.close()
-
-    with TestClient(app) as c:
-        yield c
-
-
-async def _ensure_schema(engine) -> None:
-    from app.db.base import Base
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
 
 
 class TestSelector:

@@ -9,8 +9,8 @@ from app.auth.jwt_verifier import JWTVerifier
 from app.core.exceptions import UnauthorizedError
 
 
-def _make_token(secret: str, *, sub: str, exp: object = None, email: str = "") -> str:
-    claims = {"sub": sub, "email": email}
+def _make_token(secret: str, *, sub: str, exp: object = None, email: str = "", aud: str = "authenticated") -> str:
+    claims = {"sub": sub, "email": email, "aud": aud}
     if exp is not None:
         claims["exp"] = exp
     return jwt.encode(claims, secret, algorithm="HS256")
@@ -23,6 +23,22 @@ def test_verifier_accepts_valid_token() -> None:
     user = verifier.to_user(token)
     assert str(user.id) == "123e4567-e89b-12d3-a456-426614174000"
     assert user.email == "a@b.co"
+
+
+def test_verifier_rejects_wrong_audience() -> None:
+    secret = "secret"
+    verifier = JWTVerifier(secret)
+    token = _make_token(secret, sub="123e4567-e89b-12d3-a456-426614174000", aud="other")
+    with pytest.raises(UnauthorizedError):
+        verifier.to_user(token)
+
+
+def test_verifier_accepts_authenticated_audience() -> None:
+    secret = "secret"
+    verifier = JWTVerifier(secret)
+    token = _make_token(secret, sub="123e4567-e89b-12d3-a456-426614174000", aud="authenticated")
+    user = verifier.to_user(token)
+    assert str(user.id) == "123e4567-e89b-12d3-a456-426614174000"
 
 
 def test_verifier_rejects_expired_token() -> None:

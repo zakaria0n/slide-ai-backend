@@ -19,3 +19,4 @@ class GenerationRequest(BaseModel):
     tone: str = Field(default="Professional", max_length=_TONE_MAX)
     language: str = Field(default="English", max_length=_LANG_MAX)
     theme: str | None = Field(default=None, max_length=40)
+    template_name: str | None = Field(default=None, max_length=40)

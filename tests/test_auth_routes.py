@@ -15,7 +15,6 @@ def client() -> TestClient:
         app_env="test",
         cors_allowed_origins=["http://localhost:5173"],
         supabase_jwt_secret="test-secret",
-        database_url="postgresql+asyncpg://u:p@127.0.0.1:1/none",
     )
     app = create_app(settings)
     with TestClient(app) as c:

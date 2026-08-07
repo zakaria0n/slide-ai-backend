@@ -9,15 +9,13 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from supabase import AsyncClient
 
+import app.db as db
 from app.core.exceptions import NotFoundError, ValidationError
-from app.db.repositories.file_asset import FileAssetRepository
 from app.files.storage import StorageGateway
-from app.models.file_asset import FileAsset
 
 _BUCKET = "presentation-assets"
 _MAX_BYTES = 50 * 1024 * 1024  # 50 MB
@@ -37,13 +35,13 @@ def _safe_filename(name: str) -> str:
 class FileService:
     """Owner-scoped file operations."""
 
-    def __init__(self, session: AsyncSession, storage: StorageGateway) -> None:
-        self._repo = FileAssetRepository(session)
+    def __init__(self, client: AsyncClient, storage: StorageGateway) -> None:
+        self._client = client
         self._storage = storage
 
     async def upload(
         self, owner_id: UUID, *, filename: str, data: bytes, content_type: str | None
-    ) -> FileAsset:
+    ) -> dict:
         if not data:
             raise ValidationError("File is empty")
         if len(data) > _MAX_BYTES:
@@ -56,40 +54,46 @@ class FileService:
         storage_path = f"{owner_id}/{uuid4()}-{safe}"
         await self._storage.upload(storage_path, data, content_type=content_type)
 
-        model = FileAsset(
-            owner_id=owner_id,
+        return await db.create_file_asset(
+            self._client,
+            owner_id=str(owner_id),
             filename=safe,
             storage_path=storage_path,
             content_type=content_type,
             size_bytes=len(data),
         )
-        return await self._repo.add(model)
 
-    async def list_for_owner(self, owner_id: UUID) -> Sequence[FileAsset]:
-        return await self._repo.list_for_owner(owner_id)
+    async def list_for_owner(self, owner_id: UUID) -> Sequence[dict]:
+        return await db.list_file_assets(self._client, owner_id)
 
-    async def get(self, file_id: UUID, owner_id: UUID) -> FileAsset:
-        model = await self._repo.get(file_id)
-        if model is None or model.owner_id != owner_id:
+    async def get(self, file_id: UUID, owner_id: UUID) -> dict:
+        row = await db.get_file_asset(self._client, file_id)
+        if row is None or row["owner_id"] != str(owner_id):
             raise NotFoundError("File not found")
-        return model
+        return row
+
+    async def signed_url(
+        self, file_id: UUID, owner_id: UUID, *, expires_in: int = 3600
+    ) -> dict:
+        row = await self._require_owned(file_id, owner_id)
+        url = await self._storage.create_signed_url(
+            row["storage_path"], expires_in=expires_in
+        )
+        return {"url": url, "expires_in": expires_in}
 
     async def delete(self, file_id: UUID, owner_id: UUID) -> None:
-        model = await self._require_owned(file_id, owner_id)
+        row = await self._require_owned(file_id, owner_id)
         try:
-            await self._storage.delete(model.storage_path)
+            await self._storage.delete(row["storage_path"])
         except Exception:
-            # Best-effort: the metadata row is the source of truth for the
-            # listing, so removing it even if storage delete failed keeps
-            # the UI consistent.
             pass
-        await self._repo.delete(model)
+        await db.delete_file_asset(self._client, file_id)
 
-    async def _require_owned(self, file_id: UUID, owner_id: UUID) -> FileAsset:
-        model = await self._repo.get(file_id)
-        if model is None or model.owner_id != owner_id:
+    async def _require_owned(self, file_id: UUID, owner_id: UUID) -> dict:
+        row = await db.get_file_asset(self._client, file_id)
+        if row is None or row["owner_id"] != str(owner_id):
             raise NotFoundError("File not found")
-        return model
+        return row
 
 
 def _ext(filename: str) -> str:

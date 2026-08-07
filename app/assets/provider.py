@@ -124,36 +124,34 @@ class UnsplashReadyProvider(AssetProvider):
 
 
 class PexelsReadyProvider(AssetProvider):
-    """Returns Pexels search URL patterns."""
+    """Returns Pexels search URL patterns.
+
+    Note: Pexels' CDN only serves photo IDs that actually exist. The previous
+    implementation hard-coded fake sequential IDs that returned 404 for every
+    request, so we omit Pexels from the default registry until a real API key
+    integration is wired up. The class is kept for future use.
+    """
 
     kind = AssetKind.IMAGE
     provider = "pexels"
 
     async def search(self, query: str, limit: int = 12) -> list[AssetRef]:
-        refs: list[AssetRef] = []
-        for i in range(min(limit, 12)):
-            url = f"https://images.pexels.com/photos/{1000000 + i}/pexels-photo-{1000000 + i}.jpeg?auto=compress&cs=tinysrgb&w=800"
-            thumb = url.replace("w=800", "w=200")
-            refs.append(AssetRef(
-                id=f"pexels-{query}-{i}",
-                kind=AssetKind.IMAGE,
-                url=url,
-                thumbnail=thumb,
-                attribution="Pexels",
-                provider=self.provider,
-            ))
-        return refs
+        return []
 
 
 class AssetRegistry:
-    """Resolves asset kind to provider, with in-memory TTL cache."""
+    """Resolves asset kind to provider(s), with in-memory TTL cache.
+
+    Multiple providers can be registered for the same kind; their results
+    are concatenated (deduplicated by id) up to the requested limit.
+    """
 
     def __init__(self, ttl_seconds: int = 300, max_size: int = 200) -> None:
-        self._providers: dict[AssetKind, AssetProvider] = {}
+        self._providers: dict[AssetKind, list[AssetProvider]] = {}
         self._cache: TTLCache[str, list[AssetRef]] = TTLCache(maxsize=max_size, ttl=ttl_seconds)
 
     def register(self, provider: AssetProvider) -> None:
-        self._providers[provider.kind] = provider
+        self._providers.setdefault(provider.kind, []).append(provider)
 
     async def search(self, query: str, kind: AssetKind = AssetKind.IMAGE, limit: int = 12) -> list[AssetRef]:
         cache_key = f"{kind.value}:{query}:{limit}"
@@ -161,11 +159,25 @@ class AssetRegistry:
         if cached is not None:
             return cached
 
-        provider = self._providers.get(kind)
-        if provider is None:
+        providers = self._providers.get(kind, [])
+        if not providers:
             return []
 
-        results = await provider.search(query, limit)
+        # Pull `limit` from each provider, then dedupe and trim. Cheap for the
+        # small provider counts we ship; avoids unfair bias toward any one.
+        seen_ids: set[str] = set()
+        results: list[AssetRef] = []
+        for provider in providers:
+            for ref in await provider.search(query, limit):
+                if ref.id in seen_ids:
+                    continue
+                seen_ids.add(ref.id)
+                results.append(ref)
+                if len(results) >= limit:
+                    break
+            if len(results) >= limit:
+                break
+
         self._cache[cache_key] = results
         return results
 
@@ -179,5 +191,5 @@ def build_asset_registry() -> AssetRegistry:
     registry.register(PlaceholderProvider())
     registry.register(SvgIconProvider())
     registry.register(UnsplashReadyProvider())
-    registry.register(PexelsReadyProvider())
+    # Pexels omitted: returns 404s without a real API integration.
     return registry

@@ -42,12 +42,10 @@ async def health(
 
 @router.get("/health/ready", response_model=ReadyResponse)
 async def readiness(request: Request) -> ReadyResponse:
-    """Readiness check. Verifies database connectivity."""
+    """Readiness check. Verifies Supabase connectivity."""
     try:
-        db = request.app.state.db
-        async with db.engine.connect() as conn:
-            from sqlalchemy import text
-            await conn.execute(text("SELECT 1"))
+        client = request.app.state.supabase
+        await client.table("presentations").select("id", count="exact").limit(1).execute()
         db_status = "ok"
     except Exception:
         db_status = "unavailable"

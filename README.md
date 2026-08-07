@@ -1,41 +1,56 @@
 # Slide AI Backend
 
-Production-ready backend powering the Slide AI presentation generator.
-
-The AI provider is **exposed only as "Slide AI"** to the frontend, API
-responses, logs, and settings. The internal provider implementation is
-abstracted behind an adapter and is never surfaced.
+AI-powered presentation generator. The AI provider is exposed only as **"Slide AI"** to the frontend, API responses, logs, and settings.
 
 ## Stack
 
-- FastAPI (async)
-- SQLAlchemy 2 (async, `asyncpg`)
-- Alembic (migrations)
-- Pydantic v2 / pydantic-settings
-- httpx
-- Supabase (PostgreSQL, Storage, Auth)
-- `dependency-injector` (DI / composition root)
-- pytest + pytest-asyncio
+- **FastAPI** (async)
+- **Supabase Python SDK** (data, auth, storage — single `AsyncClient`)
+- **Pydantic v2** / pydantic-settings
+- **httpx** (AI provider HTTP calls)
+- **pytest** + pytest-asyncio
 
 ## Architecture
 
 ```
 app/
   core/          Config, Logging, Exceptions, Handlers
-  db/            Base, Session/Engine, Repositories (generic), Dependencies
-  api/routes/    FastAPI routers (health, ...)
-  providers/      DI Container (composition root)
-  models/        ORM models (added in later features)
-alembic/         Migrations
-tests/           Unit + integration tests
+  db.py          Supabase query helpers (one module, no ORM)
+  api/routes/    FastAPI routers (health, auth, ...)
+  generation/     AI spec provider, spec editor, generation service
+  presentations/  Presentation CRUD service, versioning, entities, schemas
+  files/         File upload service, storage gateway, schemas
+  sharing/       Share links (public, private, password-protected)
+  workspaces/    Workspace CRUD, members, audit
+  auth/          JWT verifier, auth providers (Supabase + fake)
+  assets/        Asset search (icons, placeholder images)
+  templates/     Smart template selector
+  export/        HTML / PDF / PPTX export
+  main.py        App factory, lifespan, Supabase client init
+tests/             Unit + integration tests (FakeAsyncClient in conftest)
 ```
 
-Rules:
+All database access goes through `app/db.py` — thin async functions that call `supabase.AsyncClient.table()`. No ORM, no repositories, no migration framework.
 
-- Business logic lives in **services**, never in routes.
-- Routes call services; services call **repository interfaces**.
-- Providers implement interfaces (adapter pattern) — swappable.
-- No placeholders, no fake implementations, no TODO comments.
+## Environment Variables
+
+Only two are required for production:
+
+| Variable | Description |
+|---|---|
+| `SUPABASE_URL` | Your Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service-role key (server-only) |
+
+Optional:
+
+| Variable | Default | Description |
+|---|---|---|
+| `SUPABASE_JWT_SECRET` | `dev-insecure-secret` | Secret for verifying Supabase JWTs locally |
+| `AI_PROVIDER_BASE_URL` | `https://opencode.ai/zen/v1` | AI provider endpoint |
+| `AI_PROVIDER_API_KEY` | `public` | AI provider API key (empty = offline mode) |
+| `AI_PROVIDER_DEFAULT_MODEL` | `deepseek-v4-flash-free` | Default model for generation |
+| `AI_REQUEST_TIMEOUT_SECONDS` | `120` | Timeout for AI provider HTTP calls |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | Allowed CORS origins (JSON array or comma-separated) |
 
 ## Development
 
@@ -44,90 +59,35 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -e ".[dev]"
 
-# Configure
-cp .env.example .env   # fill Supabase + AI provider values
-
-# Run
+# Run (falls back to fake auth/storage if no Supabase)
 uvicorn app.main:app --reload --port 8000
 
-# Tests
+# Tests (uses in-memory FakeAsyncClient, no real DB needed)
 pytest
 ```
 
-## Database & Supabase
+## Database (Supabase)
 
-The application is backed by a real **Supabase** project
-(PostgreSQL + Auth + Storage):
+Tables are managed directly in the Supabase dashboard (no Alembic). The backend reads/writes through the Supabase SDK:
 
-- **Schema** is managed by Alembic. The `presentations` table is created
-  by migration `0001_create_presentations`, and is also provisioned
-  directly in the Supabase project (the table already exists in the
-  hosted database with Row Level Security enabled).
-- **Row Level Security**: `public.presentations` has an `owner_id` column
-  and a policy `presentations_owner_all` that restricts every row to
-  `owner_id = auth.uid()`. The backend enforces the same ownership in
-  application code, so the two layers agree.
-- **Auth**: when `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are set the
-  app uses the `SupabaseAuthProvider` (real Supabase Auth). Otherwise it
-  falls back to an in-memory `FakeAuthProvider` so the app still runs
-  offline / in tests. `SUPABASE_JWT_SECRET` is used to verify access
-  tokens locally (HS256, no network round-trip).
+- `presentations` — deck metadata + full spec JSON
+- `file_assets` — uploaded file metadata
+- `presentation_shares` — share links
+- `presentation_versions` — version snapshots
+- `workspaces` / `workspace_members` / `workspace_presentations` / `workspace_audit`
 
-To create the schema in a fresh Supabase project, run `alembic upgrade
-head`, or apply the DDL from the migration by hand.
+Row Level Security (RLS) on `owner_id` is enforced both by Supabase policies and in application code.
 
-## Authentication (Feature 2)
+## API
 
-Endpoints under ``/api/v1/auth``:
-
-- ``POST /signup``  � create account, returns user + JWT access/refresh tokens
-- ``POST /signin``   � authenticate, returns tokens
-- ``POST /signout``  � invalidate session (best-effort)
-- ``GET  /me``        � current user (Bearer access token)
-
-Design:
-- Routes delegate to :class:`AuthService` (business logic lives there only).
-- The service depends on an abstract :class:`AuthProvider`; the concrete
-  ``SupabaseAuthProvider`` wraps Supabase Auth. A ``FakeAuthProvider``
-  (in-memory, JWT-signed) is used for offline/dev/tests.
-- ``JWTVerifier`` validates access tokens locally (HS256, Supabase JWT
-  secret) — no network round-trip per request.
-- The internal auth backend is never exposed in API responses or logs.
-
-## Presentations (Feature 3)
-
-Owner-scoped CRUD for the user's presentations. Every endpoint requires a
-Bearer access token; the owner id is taken from the JWT ``sub`` claim, and
-operations are scoped so a user can never read or mutate another user's
-decks.
-
-Endpoints under ``/api/v1/presentations``:
-
-- ``GET    /``                 list the caller's presentations (newest first)
-- ``POST   /``                 create a draft presentation
-- ``GET    /{id}``             fetch one (owner only)
-- ``PATCH  /{id}``             rename
-- ``POST   /{id}/duplicate``   create an owned copy (``"Copy of …"``)
-- ``DELETE /{id}``             delete (owner only)
-
-Design:
-- Routes delegate to :class:`PresentationService`; the repository layer
-  (``PresentationRepository``) handles only persistence.
-- The ORM model ``Presentation`` stores owner-scoped metadata
-  (``owner_id``, ``title``, ``description``, ``status``, ``theme``,
-  ``slide_count``); slide *content* arrives in a later feature.
-- ``owner_id`` is indexed but intentionally **not** a foreign key: identity
-  lives in the external Supabase auth provider, not in this database.
-- The ``presentations`` table is created by the Alembic migration
-  ``0001_create_presentations``.
-
-## Internal AI provider
-
-The default internal provider is **OpenCode Zen** (OpenAI-compatible
-Chat Completions). It is wrapped by a `SlideAIProvider` adapter so the
-underlying provider can be replaced without touching application code.
-Users only ever see the name **"Slide AI"**.
-
-## Related repositories
-
-- **Frontend (React + Vite):** https://github.com/HamzaBenChaoui/Ai_Presentation_generated
+- `POST /api/v1/auth/signup` — create account
+- `POST /api/v1/auth/signin` — authenticate
+- `GET  /api/v1/auth/me` — current user
+- `POST /api/v1/presentations/generate` — AI generation
+- `GET/POST/PATCH/DELETE /api/v1/presentations` — CRUD
+- `PUT /api/v1/presentations/{id}/spec` — live editing
+- `POST /api/v1/presentations/{id}/edit` — AI-driven editing
+- `GET /api/v1/presentations/{id}/export` — HTML/PDF/PPTX export
+- `POST /api/v1/presentations/{id}/shares` — sharing
+- `GET/POST/PATCH/DELETE /api/v1/workspaces` — workspaces
+- `POST /api/v1/files` — file upload

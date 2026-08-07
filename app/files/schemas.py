@@ -6,8 +6,6 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from app.models.file_asset import FileAsset
-
 
 class FileAssetResponse(BaseModel):
     id: UUID
@@ -19,18 +17,26 @@ class FileAssetResponse(BaseModel):
     created_at: datetime
 
     @classmethod
-    def from_model(cls, m: FileAsset) -> "FileAssetResponse":
+    def from_dict(cls, d: dict) -> "FileAssetResponse":
+        created_at = d["created_at"]
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at)
         return cls(
-            id=m.id,
-            owner_id=m.owner_id,
-            filename=m.filename,
-            storage_path=m.storage_path,
-            content_type=m.content_type,
-            size_bytes=m.size_bytes,
-            created_at=m.created_at,
+            id=UUID(d["id"]),
+            owner_id=UUID(d["owner_id"]),
+            filename=d["filename"],
+            storage_path=d["storage_path"],
+            content_type=d.get("content_type"),
+            size_bytes=d.get("size_bytes", 0),
+            created_at=created_at,
         )
 
 
 class FileListResponse(BaseModel):
     items: list[FileAssetResponse]
     total: int
+
+
+class FileUrlResponse(BaseModel):
+    url: str
+    expires_in: int

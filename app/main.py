@@ -5,14 +5,11 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI
-from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import Settings, get_settings
 from app.core.handlers import register_exception_handlers
 from app.core.logging import get_logger, setup_logging
-from app.db.dependencies import Database
-from app.providers.container import Container
 from app.api.routes.health import router as health_router
 from app.api.routes.auth import router as auth_router
 from app.presentations.routes import router as presentations_router
@@ -21,6 +18,7 @@ from app.assets.routes import router as assets_router
 from app.templates.routes import router as templates_router
 from app.sharing.routes import router as sharing_router
 from app.workspaces.routes import router as workspaces_router
+from app.chat.routes import router as chat_router
 
 
 logger = get_logger("main")
@@ -30,8 +28,8 @@ logger = get_logger("main")
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Manage startup and shutdown resources.
 
-    Startup: configure logging, build the DB engine, verify connectivity.
-    Shutdown: dispose the engine and release connections.
+    Startup: configure logging, create the Supabase AsyncClient.
+    Shutdown: nothing to dispose (AsyncClient is stateless).
     """
     settings: Settings = app.state.settings
     setup_logging(settings)
@@ -42,32 +40,36 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.api_version,
     )
 
-    # Composition root: the DI container owns the engine and factory.
-    container = Container(config=settings)
-    engine = container.engine()
-    factory = container.session_factory()
-    app.state.db = Database(engine=engine, factory=factory)
+    # Create the Supabase client used by all data-access.
+    from supabase import AsyncClient, AsyncClientOptions, create_async_client
 
-    # Wire the Supabase-backed auth provider when configured; otherwise
-    # fall back to the in-memory fake so the app runs offline / in tests.
-    from app.auth.providers.fake import FakeAuthProvider
-    from app.auth.providers.supabase import SupabaseAuthProvider
-
-    _secret = settings.supabase_jwt_secret or "dev-insecure-secret"
-    use_supabase = settings.supabase_url and settings.supabase_service_role_key
-    if use_supabase and "sqlite" not in settings.sqlalchemy_database_uri:
+    use_supabase = bool(settings.supabase_url and settings.supabase_service_role_key)
+    if use_supabase:
         try:
-            from supabase import AsyncClient, AsyncClientOptions, create_async_client
-
             supabase_client: AsyncClient = await create_async_client(
                 settings.supabase_url,
                 settings.supabase_service_role_key,
                 options=AsyncClientOptions(auto_refresh_token=False, persist_session=False),
             )
-            app.state.auth_provider = SupabaseAuthProvider(supabase_client)
-            logger.info("Auth provider: Supabase")
-            from app.files.storage import SupabaseStorageGateway
+            app.state.supabase = supabase_client
 
+            # Auth provider. Uses a SEPARATE client so that signup/signin
+            # (which store the end-user's JWT as the session) never switch the
+            # shared data client into the user role. The data client keeps the
+            # service-role key and therefore bypasses RLS; otherwise queries
+            # run as the user and hit broken policies (e.g. the infinite
+            # recursion between workspaces and workspace_members).
+            auth_client: AsyncClient = await create_async_client(
+                settings.supabase_url,
+                settings.supabase_service_role_key,
+                options=AsyncClientOptions(auto_refresh_token=False, persist_session=False),
+            )
+            from app.auth.providers.supabase import SupabaseAuthProvider
+            app.state.auth_provider = SupabaseAuthProvider(auth_client)
+            logger.info("Auth provider: Supabase")
+
+            # Storage gateway.
+            from app.files.storage import SupabaseStorageGateway
             app.state.storage = SupabaseStorageGateway(supabase_client)
             logger.info("Storage: Supabase")
         except Exception as exc:
@@ -75,37 +77,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             use_supabase = False
 
     if not use_supabase:
-        app.state.auth_provider = FakeAuthProvider(_secret)
-        logger.info("Auth provider: in-memory fake")
+        from app.auth.providers.fake import FakeAuthProvider
         from app.files.storage import InMemoryStorageGateway
 
+        _secret = settings.supabase_jwt_secret or "dev-insecure-secret"
+        app.state.auth_provider = FakeAuthProvider(_secret)
         app.state.storage = InMemoryStorageGateway()
+        logger.info("Auth provider: in-memory fake")
         logger.info("Storage: in-memory")
 
-    # For SQLite, auto-create all tables so local dev works without migrations.
-    if "sqlite" in settings.sqlalchemy_database_uri:
-        from app.db.base import Base
-        import app.models.presentation  # noqa: F401
-        import app.models.slide  # noqa: F401
-        import app.models.file_asset  # noqa: F401
-        import app.models.presentation_version  # noqa: F401
-        import app.models.presentation_share  # noqa: F401
-        import app.models.workspace  # noqa: F401
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("SQLite tables auto-created")
-
-    # Verify the database accepts connections before serving traffic.
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-    except Exception as exc:  # pragma: no cover - depends on live DB
-        logger.warning("Database connectivity check failed at startup: %s", exc)
+        # For local dev without Supabase, create a minimal fake client.
+        # The app won't persist data but will start without errors.
+        from unittest.mock import AsyncMock
+        app.state.supabase = AsyncMock()
 
     logger.info("Startup complete.")
     yield
-
-    await app.state.db.dispose()
     logger.info("Shutdown complete.")
 
 
@@ -124,13 +111,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         debug=settings.app_debug,
     )
     app.state.settings = settings
-    # Shared, per-application auth provider (in-memory fake by default;
-    # production wiring swaps this for the Supabase-backed provider).
+
     from app.auth.jwt_verifier import JWTVerifier
     from app.auth.providers.fake import FakeAuthProvider
+
+    if not settings.supabase_jwt_secret and settings.app_env != "development":
+        raise RuntimeError(
+            "SUPABASE_JWT_SECRET is required in non-development environments. "
+            "Refusing to start with an insecure fallback."
+        )
     _secret = settings.supabase_jwt_secret or "dev-insecure-secret"
     app.state.auth_provider = FakeAuthProvider(_secret)
-    app.state.jwt_verifier = JWTVerifier(_secret)
+    app.state.jwt_verifier = JWTVerifier(
+        _secret, supabase_url=settings.supabase_url or ""
+    )
 
     # CORS: restrict to configured origins in production.
     app.add_middleware(
@@ -143,16 +137,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     register_exception_handlers(app)
 
-    # Routers
-    api_prefix = settings.api_v1_prefix
-    app.include_router(health_router, prefix=api_prefix)
-    app.include_router(auth_router, prefix=api_prefix)
-    app.include_router(presentations_router, prefix=api_prefix)
-    app.include_router(files_router, prefix=api_prefix)
-    app.include_router(assets_router, prefix=api_prefix)
-    app.include_router(templates_router, prefix=api_prefix)
-    app.include_router(sharing_router, prefix=api_prefix)
-    app.include_router(workspaces_router, prefix=api_prefix)
+    # Routers — each sub-router defines its own prefix (e.g. "/presentations").
+    # Mount all under /api/v1 directly on the app.
+    v1 = settings.api_v1_prefix
+    app.include_router(health_router, prefix=v1)
+    app.include_router(auth_router, prefix=v1)
+    app.include_router(presentations_router, prefix=v1)
+    app.include_router(files_router, prefix=v1)
+    app.include_router(assets_router, prefix=v1)
+    app.include_router(templates_router, prefix=v1)
+    app.include_router(sharing_router, prefix=v1)
+    app.include_router(workspaces_router, prefix=v1)
+    app.include_router(chat_router, prefix=v1)
 
     @app.get("/", tags=["meta"])
     async def root() -> dict[str, str]:

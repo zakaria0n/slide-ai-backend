@@ -5,7 +5,6 @@ Endpoints (all owner-scoped, require a Bearer access token):
 - ``POST   /presentations``                 create a draft presentation
 - ``POST   /presentations/generate``        generate a new deck end-to-end
 - ``GET    /presentations/{id}``            fetch one (owner only)
-- ``GET    /presentations/{id}/slides``     fetch the ordered slides (owner only)
 - ``GET    /presentations/{id}/spec``       fetch the structured spec (owner only)
 - ``PUT    /presentations/{id}/spec``       update the structured spec (owner only)
 - ``POST   /presentations/{id}/edit``       AI-driven spec edit (owner only)
@@ -22,116 +21,104 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import Response, StreamingResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
+from supabase import AsyncClient
 
+import app.db as db
+from app.api.deps import extract_token, owner_id, supabase
 from app.core.config import Settings
-from app.core.exceptions import NotFoundError, UnauthorizedError
-from app.db.dependencies import Database
-from app.db.repositories.presentation import PresentationRepository
-from app.db.repositories.slide import SlideRepository
-from app.generation.schemas import GenerationRequest
+from app.core.exceptions import ForbiddenError, NotFoundError
 from app.generation.service import GenerationService
 from app.generation.spec import PresentationSpec
-from app.presentations.entities import Presentation
 from app.export.strategy import ExportFormat
 from app.export.service import ExportService
+from app.generation.schemas import GenerationRequest
 from app.presentations.schemas import (
     CreatePresentationRequest,
     PresentationListResponse,
     PresentationResponse,
     RenamePresentationRequest,
-    SlideResponse,
 )
 from app.presentations.service import PresentationService
 
 router = APIRouter(prefix="/presentations", tags=["presentations"])
 
-_bearer = HTTPBearer(auto_error=False)
+# Re-export shared deps as local names used by existing route signatures.
+_extract_token = extract_token
+_supabase = supabase
+_owner_id = owner_id
 
 
-def _extract_token(
-    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
-) -> str:
-    if creds is None or not creds.credentials:
-        raise UnauthorizedError("Missing authentication token")
-    return creds.credentials
+async def _require_presentation(
+    supabase: AsyncClient,
+    presentation_id: UUID,
+    user_id: UUID,
+    *,
+    write: bool = False,
+) -> dict:
+    """Return the presentation row if the caller may access it.
+
+    Access is granted when the caller owns the presentation or is a member
+    of a workspace that contains it. ``write=True`` additionally requires
+    an ``owner``/``admin``/``editor`` role.
+    """
+    row = await db.get_presentation(supabase, presentation_id)
+    if row is None:
+        raise NotFoundError("Presentation not found")
+    role = await db.get_presentation_access_role(supabase, presentation_id, user_id)
+    if role is None:
+        raise NotFoundError("Presentation not found")
+    if write and role not in ("owner", "admin", "editor"):
+        raise ForbiddenError("You have read-only access to this presentation")
+    return row
 
 
-def _db(request: Request) -> Database:
-    return request.app.state.db
-
-
-async def _owner_id(request: Request, token: str = Depends(_extract_token)) -> UUID:
-    verifier = getattr(request.app.state, "jwt_verifier", None)
-    if verifier is None:
-        raise UnauthorizedError("Authentication is not configured")
-    return verifier.user_id(token)
-
-
-def _to_response(model: object) -> PresentationResponse:
-    m = model  # type: ignore[assignment]
-    return PresentationResponse.from_entity(
-        Presentation(
-            id=m.id,
-            owner_id=m.owner_id,
-            title=m.title,
-            description=m.description,
-            slide_count=m.slide_count,
-            status=m.status,
-            theme=m.theme,
-            created_at=m.created_at,
-            updated_at=m.updated_at,
-        )
+def _to_response(row: dict) -> PresentationResponse:
+    return PresentationResponse(
+        id=UUID(row["id"]),
+        owner_id=UUID(row["owner_id"]),
+        title=row["title"],
+        description=row.get("description"),
+        slide_count=row.get("slide_count", 0),
+        status=row.get("status", "draft"),
+        theme=row.get("theme"),
+        created_at=_parse_dt(row["created_at"]),
+        updated_at=_parse_dt(row["updated_at"]),
     )
 
 
+def _parse_dt(value: str) -> str:
+    return value
+
+
 async def _service(
-    request: Request,
-    db: Database = Depends(_db),
+    supabase: AsyncClient = Depends(_supabase),
 ) -> PresentationService:
-    """Yield a service bound to a session committed on success."""
-    session = db.session_factory()
-    try:
-        yield PresentationService(session)
-        await session.commit()
-    except Exception:
-        await session.rollback()
-        raise
-    finally:
-        await session.close()
+    yield PresentationService(supabase)
 
 
 async def _generation_service(
     request: Request,
-    db: Database = Depends(_db),
+    supabase: AsyncClient = Depends(_supabase),
 ) -> GenerationService:
-    """Yield a generation service committed on success."""
     from app.generation.spec_provider import build_spec_provider
 
     settings: Settings = request.app.state.settings
     provider = build_spec_provider(settings)
-    session = db.session_factory()
-    try:
-        yield GenerationService(session, provider=provider)
-        await session.commit()
-    except Exception:
-        await session.rollback()
-        raise
-    finally:
-        await session.close()
+    yield GenerationService(supabase, provider=provider)
 
 
 @router.get("", response_model=PresentationListResponse)
 async def list_presentations(
     owner_id: UUID = Depends(_owner_id),
+    supabase: AsyncClient = Depends(_supabase),
     service: PresentationService = Depends(_service),
     limit: int = 50,
     offset: int = 0,
 ) -> PresentationListResponse:
     items = await service.list_for_owner(owner_id, limit=limit, offset=offset)
-    total = len(items)
+    total = await db.count_presentations(supabase, owner_id)
     return PresentationListResponse(
         items=[PresentationResponse.from_entity(p) for p in items],
         total=total,
@@ -164,8 +151,12 @@ async def generate_presentation(
     Creates a draft, asks the provider (exposed only as "Slide AI") for
     slides, persists them, and returns the ready presentation.
     """
-    model = await service.generate(owner_id, request=req)
-    return _to_response(model)
+    from app.core.ratelimit import generation_limiter
+
+    generation_limiter.check(str(owner_id))
+
+    row = await service.generate(owner_id, request=req)
+    return _to_response(row)
 
 
 @router.get("/{presentation_id}", response_model=PresentationResponse)
@@ -178,42 +169,15 @@ async def get_presentation(
     return PresentationResponse.from_entity(p)
 
 
-@router.get("/{presentation_id}/slides", response_model=list[SlideResponse])
-async def get_presentation_slides(
-    presentation_id: UUID,
-    owner_id: UUID = Depends(_owner_id),
-    db: Database = Depends(_db),
-) -> list[SlideResponse]:
-    """Return the ordered slides for a presentation (owner only)."""
-    session = db.session_factory()
-    try:
-        # Ownership check first.
-        await PresentationService(session).get(presentation_id, owner_id)
-        slides = await SlideRepository(session).list_for_presentation(
-            presentation_id, owner_id=owner_id
-        )
-    finally:
-        await session.close()
-    return [SlideResponse.from_content(s.slide_index, s.content) for s in slides]
-
-
 @router.get("/{presentation_id}/spec", response_model=PresentationSpec)
 async def get_presentation_spec(
     presentation_id: UUID,
     owner_id: UUID = Depends(_owner_id),
-    db: Database = Depends(_db),
+    supabase: AsyncClient = Depends(_supabase),
 ) -> PresentationSpec:
     """Return the full structured specification for a presentation."""
-    session = db.session_factory()
-    try:
-        presentation = await PresentationRepository(session).get_owned(
-            presentation_id, owner_id
-        )
-        if presentation is None:
-            raise NotFoundError("Presentation not found")
-        spec = presentation.spec
-    finally:
-        await session.close()
+    row = await _require_presentation(supabase, presentation_id, owner_id)
+    spec = row.get("spec")
     if not spec:
         raise NotFoundError("Presentation specification not found")
     return PresentationSpec.model_validate(spec)
@@ -224,7 +188,7 @@ async def export_presentation(
     presentation_id: UUID,
     format: ExportFormat = ExportFormat.HTML,
     owner_id: UUID = Depends(_owner_id),
-    db: Database = Depends(_db),
+    supabase: AsyncClient = Depends(_supabase),
 ) -> Response:
     """Export a presentation to HTML / PDF / PPTX.
 
@@ -232,16 +196,8 @@ async def export_presentation(
     - ``pdf`` returns a real vector PDF rendered via Playwright.
     - ``pptx`` returns a native PowerPoint file with content only.
     """
-    session = db.session_factory()
-    try:
-        presentation = await PresentationRepository(session).get_owned(
-            presentation_id, owner_id
-        )
-        if presentation is None:
-            raise NotFoundError("Presentation not found")
-        spec_raw = presentation.spec
-    finally:
-        await session.close()
+    row = await _require_presentation(supabase, presentation_id, owner_id)
+    spec_raw = row.get("spec")
     if not spec_raw:
         raise NotFoundError("Presentation specification not found")
     spec = PresentationSpec.model_validate(spec_raw)
@@ -258,7 +214,7 @@ async def update_presentation_spec(
     presentation_id: UUID,
     spec: PresentationSpec,
     owner_id: UUID = Depends(_owner_id),
-    db: Database = Depends(_db),
+    supabase: AsyncClient = Depends(_supabase),
 ) -> PresentationSpec:
     """Replace the presentation specification (live editing).
 
@@ -268,25 +224,15 @@ async def update_presentation_spec(
     if not spec.slides:
         from fastapi import HTTPException
         raise HTTPException(status_code=422, detail="slides required")
-    session = db.session_factory()
-    try:
-        presentation = await PresentationRepository(session).get_owned(
-            presentation_id, owner_id
-        )
-        if presentation is None:
-            raise NotFoundError("Presentation not found")
-        from app.presentations.versioning import snapshot_if_changed
-        old_spec = PresentationSpec.model_validate(presentation.spec)
-        await snapshot_if_changed(session, presentation_id, owner_id, old_spec, note="manual edit")
-        presentation.spec = spec.model_dump()
-        presentation.slide_count = len(spec.slides)
-        session.add(presentation)
-        await session.commit()
-    except Exception:
-        await session.rollback()
-        raise
-    finally:
-        await session.close()
+    row = await _require_presentation(supabase, presentation_id, owner_id, write=True)
+    old_spec = PresentationSpec.model_validate(row["spec"])
+    from app.presentations.versioning import snapshot_if_changed
+    await snapshot_if_changed(supabase, presentation_id, owner_id, old_spec, note="manual edit")
+    await db.update_presentation(
+        supabase, presentation_id,
+        spec=spec.model_dump(),
+        slide_count=len(spec.slides),
+    )
     return spec
 
 
@@ -307,109 +253,41 @@ async def ai_edit_presentation(
     req: SpecEditRequest,
     request: Request,
     owner_id: UUID = Depends(_owner_id),
-    db: Database = Depends(_db),
+    supabase: AsyncClient = Depends(_supabase),
 ) -> SpecEditResponse:
     """AI-driven spec editing.
 
     Takes an instruction (e.g. 'make it modern', 'reduce text') and applies
     it to the current spec. Only affected slides are modified.
     """
+    from app.core.ratelimit import generation_limiter
     from app.generation.spec_editor import SpecEditResult, build_spec_edit_provider
+
+    generation_limiter.check(str(owner_id))
 
     settings: Settings = request.app.state.settings
     provider = build_spec_edit_provider(settings)
 
-    session = db.session_factory()
-    try:
-        presentation = await PresentationRepository(session).get_owned(
-            presentation_id, owner_id
-        )
-        if presentation is None:
-            raise NotFoundError("Presentation not found")
-        current_spec = PresentationSpec.model_validate(presentation.spec)
+    row = await _require_presentation(supabase, presentation_id, owner_id, write=True)
+    current_spec = PresentationSpec.model_validate(row["spec"])
 
-        result: SpecEditResult = await provider.edit_spec(
-            current_spec, req.instruction, req.target_indexes
-        )
+    result: SpecEditResult = await provider.edit_spec(
+        current_spec, req.instruction, req.target_indexes
+    )
 
-        from app.presentations.versioning import snapshot_if_changed
-        await snapshot_if_changed(session, presentation_id, owner_id, current_spec, note=f"before: {req.instruction}")
+    from app.presentations.versioning import snapshot_if_changed
+    await snapshot_if_changed(supabase, presentation_id, owner_id, current_spec, note=f"before: {req.instruction}")
 
-        presentation.spec = result.modified_spec.model_dump()
-        presentation.slide_count = len(result.modified_spec.slides)
-        session.add(presentation)
-        await session.commit()
-    except Exception:
-        await session.rollback()
-        raise
-    finally:
-        await session.close()
+    await db.update_presentation(
+        supabase, presentation_id,
+        spec=result.modified_spec.model_dump(),
+        slide_count=len(result.modified_spec.slides),
+    )
 
     return SpecEditResponse(
         spec=result.modified_spec,
         summary=result.summary,
         changed_indexes=result.changed_indexes,
-    )
-
-
-@router.post("/{presentation_id}/edit/stream")
-async def ai_edit_presentation_stream(
-    presentation_id: UUID,
-    req: SpecEditRequest,
-    request: Request,
-    owner_id: UUID = Depends(_owner_id),
-    db: Database = Depends(_db),
-) -> StreamingResponse:
-    """Streaming AI edit — returns SSE events: thinking, then the full result."""
-    import asyncio
-    import json as _json
-
-    from app.generation.spec_editor import SpecEditResult, build_spec_edit_provider
-
-    settings: Settings = request.app.state.settings
-    provider = build_spec_edit_provider(settings)
-
-    async def event_stream():
-        session = db.session_factory()
-        try:
-            presentation = await PresentationRepository(session).get_owned(
-                presentation_id, owner_id
-            )
-            if presentation is None:
-                yield f"event: error\ndata: {_json.dumps({'message': 'Presentation not found'})}\n\n"
-                return
-
-            current_spec = PresentationSpec.model_validate(presentation.spec)
-
-            yield "event: thinking\ndata: {}\n\n"
-
-            result: SpecEditResult = await provider.edit_spec(
-                current_spec, req.instruction, req.target_indexes
-            )
-
-            from app.presentations.versioning import snapshot_if_changed
-            await snapshot_if_changed(session, presentation_id, owner_id, current_spec, note=f"before: {req.instruction}")
-
-            presentation.spec = result.modified_spec.model_dump()
-            presentation.slide_count = len(result.modified_spec.slides)
-            session.add(presentation)
-            await session.commit()
-
-            payload = {
-                "spec": result.modified_spec.model_dump(mode="json"),
-                "summary": result.summary,
-                "changed_indexes": result.changed_indexes,
-            }
-            yield f"event: result\ndata: {_json.dumps(payload)}\n\n"
-        except Exception as exc:
-            yield f"event: error\ndata: {_json.dumps({'message': str(exc)})}\n\n"
-        finally:
-            await session.close()
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
@@ -422,7 +300,7 @@ class VersionResponse(BaseModel):
     version_note: str | None
     slide_count: int
     created_at: str
-    spec: PresentationSpec | None = None
+    spec: dict | None = None
 
 
 class VersionListResponse(BaseModel):
@@ -434,28 +312,20 @@ class VersionListResponse(BaseModel):
 async def list_versions(
     presentation_id: UUID,
     owner_id: UUID = Depends(_owner_id),
-    db: Database = Depends(_db),
+    supabase: AsyncClient = Depends(_supabase),
 ) -> VersionListResponse:
     """List version history for a presentation."""
-    from app.db.repositories.presentation_version import PresentationVersionRepository
-
-    session = db.session_factory()
-    try:
-        presentation = await PresentationRepository(session).get_owned(presentation_id, owner_id)
-        if presentation is None:
-            raise NotFoundError("Presentation not found")
-        versions = await PresentationVersionRepository(session).list_for_presentation(presentation_id)
-    finally:
-        await session.close()
+    await _require_presentation(supabase, presentation_id, owner_id)
+    versions = await db.list_versions(supabase, presentation_id)
 
     return VersionListResponse(
         versions=[
             VersionResponse(
-                id=str(v.id),
-                presentation_id=str(v.presentation_id),
-                version_note=v.version_note,
-                slide_count=v.slide_count,
-                created_at=v.created_at.isoformat(),
+                id=str(v["id"]),
+                presentation_id=str(v["presentation_id"]),
+                version_note=v.get("version_note"),
+                slide_count=v.get("slide_count", 0),
+                created_at=v["created_at"],
             )
             for v in versions
         ],
@@ -468,29 +338,21 @@ async def get_version(
     presentation_id: UUID,
     version_id: UUID,
     owner_id: UUID = Depends(_owner_id),
-    db: Database = Depends(_db),
+    supabase: AsyncClient = Depends(_supabase),
 ) -> VersionResponse:
     """Get a specific version snapshot with full spec."""
-    from app.db.repositories.presentation_version import PresentationVersionRepository
-
-    session = db.session_factory()
-    try:
-        presentation = await PresentationRepository(session).get_owned(presentation_id, owner_id)
-        if presentation is None:
-            raise NotFoundError("Presentation not found")
-        version = await PresentationVersionRepository(session).get_owned(version_id, owner_id)
-        if version is None:
-            raise NotFoundError("Version not found")
-    finally:
-        await session.close()
+    await _require_presentation(supabase, presentation_id, owner_id)
+    version = await db.get_version(supabase, version_id)
+    if version is None:
+        raise NotFoundError("Version not found")
 
     return VersionResponse(
-        id=str(version.id),
-        presentation_id=str(version.presentation_id),
-        version_note=version.version_note,
-        slide_count=version.slide_count,
-        created_at=version.created_at.isoformat(),
-        spec=PresentationSpec.model_validate(version.spec),
+        id=str(version["id"]),
+        presentation_id=str(version["presentation_id"]),
+        version_note=version.get("version_note"),
+        slide_count=version.get("slide_count", 0),
+        created_at=version["created_at"],
+        spec=version.get("spec"),
     )
 
 
@@ -499,36 +361,29 @@ async def restore_version(
     presentation_id: UUID,
     version_id: UUID,
     owner_id: UUID = Depends(_owner_id),
-    db: Database = Depends(_db),
+    supabase: AsyncClient = Depends(_supabase),
 ) -> PresentationSpec:
     """Restore a presentation to a specific version snapshot."""
-    from app.db.repositories.presentation_version import PresentationVersionRepository
-    from app.presentations.versioning import snapshot_if_changed
+    from app.presentations.versioning import snapshot_if_changed, restore_conversation
 
-    session = db.session_factory()
-    try:
-        presentation = await PresentationRepository(session).get_owned(presentation_id, owner_id)
-        if presentation is None:
-            raise NotFoundError("Presentation not found")
-        version = await PresentationVersionRepository(session).get_owned(version_id, owner_id)
-        if version is None:
-            raise NotFoundError("Version not found")
+    row = await _require_presentation(supabase, presentation_id, owner_id, write=True)
+    version = await db.get_version(supabase, version_id)
+    if version is None:
+        raise NotFoundError("Version not found")
 
-        old_spec = PresentationSpec.model_validate(presentation.spec)
-        restored_spec = PresentationSpec.model_validate(version.spec)
+    old_spec = PresentationSpec.model_validate(row["spec"])
+    restored_spec = PresentationSpec.model_validate(version["spec"])
 
-        # Snapshot current state before restoring.
-        await snapshot_if_changed(session, presentation_id, owner_id, old_spec, note="before restore")
+    await snapshot_if_changed(supabase, presentation_id, owner_id, old_spec, note="before restore")
 
-        presentation.spec = restored_spec.model_dump()
-        presentation.slide_count = len(restored_spec.slides)
-        session.add(presentation)
-        await session.commit()
-    except Exception:
-        await session.rollback()
-        raise
-    finally:
-        await session.close()
+    await db.update_presentation(
+        supabase, presentation_id,
+        spec=restored_spec.model_dump(),
+        slide_count=len(restored_spec.slides),
+    )
+
+    # Also restore conversation to the version's snapshot
+    await restore_conversation(supabase, presentation_id, version_id, owner_id)
 
     return restored_spec
 

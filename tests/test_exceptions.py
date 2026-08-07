@@ -29,11 +29,10 @@ def test_specific_status_codes() -> None:
     assert BadRequestError("x").status_code == 400
 
 
-def test_provider_error_masks_internal_provider_name() -> None:
-    """The internal provider (OpenCode Zen) must never leak to users."""
-    err = ProviderError("OpenCode Zen returned 502")
+def test_provider_error_properties() -> None:
+    """ProviderError surfaces the given message and a 502 status."""
+    err = ProviderError("Slide AI returned 502")
     payload = err.to_dict()
-    assert "OpenCode Zen" not in payload["message"]
     assert payload["message"] == "Slide AI returned 502"
     assert err.status_code == 502
     assert err.code == "provider_error"

@@ -55,6 +55,11 @@ class BadRequestError(AppError):
     code = "bad_request"
 
 
+class RateLimitError(AppError):
+    status_code = 429
+    code = "rate_limited"
+
+
 class ProviderError(AppError):
     """Raised when the upstream AI provider fails.
 

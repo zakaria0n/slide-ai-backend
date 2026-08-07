@@ -205,7 +205,9 @@ def render_spec_html(spec: PresentationSpec, theme: ThemeTokens, animate: bool =
         body += _render_elements([e for et in ("bullets", "quote", "code", "table", "image", "icon", "diagram") for e in g.get(et, [])], t, i0=10)
         bg = s.get("background") or t.bg
         slides_html.append(
-            f'<section class="slide print-break" style="width:100%;aspect-ratio:16/9;max-height:100%;background:{bg};border-radius:{t.radius_lg};border:1px solid {t.border};padding:clamp(24px,4vw,64px);color:{t.text};box-sizing:border-box;overflow:hidden;display:flex;flex-direction:column;justify-content:center">{body}</section>'
+            f'<section class="slide print-break" style="width:100%;aspect-ratio:16/9;max-height:100%;background:{bg};border-radius:{t.radius_lg};border:1px solid {t.border};padding:clamp(24px,4vw,64px);padding-top:clamp(24px,4vw,64px);color:{t.text};box-sizing:border-box;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-start">'
+            f'<div style="margin-top:24px">{body}</div>'
+            f'</section>'
         )
 
     # Collect unique font links
@@ -292,7 +294,22 @@ class PdfExportStrategy(ExportStrategy):
                     margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
                 )
                 await browser.close()
+        except Exception as exc:
+            # The most common cause is a missing Chromium binary —
+            # `playwright install chromium` must be run manually after pip install.
+            from app.core.exceptions import ProviderError
+
+            msg = str(exc)
+            if "Executable doesn't exist" in msg or "playwright install" in msg.lower():
+                raise ProviderError(
+                    "PDF export requires the Chromium binary. "
+                    "Run `python -m playwright install chromium` on the server."
+                ) from exc
+            raise ProviderError(f"PDF export failed: {exc}") from exc
         finally:
-            os.unlink(html_path)
+            try:
+                os.unlink(html_path)
+            except OSError:
+                pass
 
         return ExportedFile(pdf_bytes, "application/pdf", f"{safe}.pdf")

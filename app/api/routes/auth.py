@@ -10,9 +10,9 @@ Routes contain no business logic; they delegate to :class:`AuthService`.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, Request
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import APIRouter, Depends, Request
 
+from app.api.deps import extract_token
 from app.auth.schemas import (
     AuthResponse,
     MessageResponse,
@@ -25,13 +25,6 @@ from app.auth.service import AuthService
 from app.core.config import Settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-_bearer = HTTPBearer(auto_error=False)
-
-
-def _extract_token(
-    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
-) -> str | None:
-    return creds.credentials if creds else None
 
 
 def _app_settings(request: Request) -> Settings:
@@ -49,12 +42,14 @@ def _service(
     in-memory provider keeps its state across requests. Production wiring
     replaces this with the Supabase-backed provider through the DI container.
     """
-    from app.auth.jwt_verifier import JWTVerifier
     from app.auth.providers.fake import FakeAuthProvider
     from app.auth.service import AuthService
 
-    secret = settings.supabase_jwt_secret or "dev-insecure-secret"
-    verifier = JWTVerifier(secret)
+    verifier = getattr(request.app.state, "jwt_verifier", None)
+    if verifier is None:
+        from app.auth.jwt_verifier import JWTVerifier
+        secret = settings.supabase_jwt_secret or "dev-insecure-secret"
+        verifier = JWTVerifier(secret)
     provider = getattr(request.app.state, "auth_provider", None)
     if provider is None:
         provider = FakeAuthProvider(secret)
@@ -97,7 +92,7 @@ async def signout(
 
 @router.get("/me", response_model=UserResponse)
 async def me(
-    token: str | None = Depends(_extract_token),
+    token: str = Depends(extract_token),
     service: AuthService = Depends(_service),
 ) -> UserResponse:
     user = await service.current_user(token)

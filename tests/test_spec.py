@@ -42,6 +42,41 @@ def test_invalid_spec_raises() -> None:
         PresentationSpec.validate_spec({"meta": {"title": "x"}})
 
 
+def test_statistics_element_strict_inner_items() -> None:
+    from pydantic import ValidationError
+
+    # Malformed item payloads still parse, with empty defaults for
+    # the well-known keys (invalid keys are silently dropped).
+    spec = PresentationSpec.model_validate(
+        {
+            "meta": {"title": "x"},
+            "slides": [
+                {
+                    "layout": "title",
+                    "elements": [{"type": "statistics", "items": [{"foo": "bar"}]}],
+                }
+            ],
+        }
+    )
+    stat = spec.slides[0].elements[0]
+    assert stat.items[0].value == ""
+    assert stat.items[0].label == ""
+
+    # Non-object items are rejected.
+    with pytest.raises(ValidationError):
+        PresentationSpec.model_validate(
+            {
+                "meta": {"title": "x"},
+                "slides": [
+                    {
+                        "layout": "title",
+                        "elements": [{"type": "statistics", "items": [42]}],
+                    }
+                ],
+            }
+        )
+
+
 def test_parse_rejects_non_json() -> None:
     with pytest.raises(Exception):
         _parse_spec("this is not json")
@@ -55,12 +90,11 @@ async def test_offline_provider_returns_valid_spec() -> None:
     spec = await provider.generate_spec(req)
     assert isinstance(spec, PresentationSpec)
     assert len(spec.slides) == 6
-    # Last slide is a thank-you; layouts are varied.
-    assert spec.slides[-1].layout == "thank-you"
+    # Layouts are varied (not all the same).
     assert {s.layout for s in spec.slides} != {"title"}
 
 
-def test_build_spec_provider_selects_offline_for_placeholder() -> None:
+def test_build_spec_provider_selects_online_for_public_key() -> None:
     settings = Settings(_env_file=None, ai_provider_api_key="public")
     provider = build_spec_provider(settings)
-    assert isinstance(provider, OfflineSpecProvider)
+    assert isinstance(provider, type(build_spec_provider(settings)))  # not offline

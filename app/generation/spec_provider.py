@@ -26,6 +26,7 @@ from app.core.config import Settings
 from app.core.exceptions import ProviderError
 from app.generation.schemas import GenerationRequest
 from app.generation.spec import PresentationSpec
+from app.templates.library import get_template
 
 DISPLAYED_PROVIDER = "Slide AI"
 _MAX_RETRIES = 2
@@ -177,11 +178,19 @@ class OnlineSpecProvider(SpecProvider):
         last_error: Exception | None = None
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             for attempt in range(_MAX_RETRIES + 1):
-                system = _SYSTEM_PROMPT + (
-                    "\nFix the previous output to match the schema exactly."
-                    if attempt > 0
-                    else ""
-                )
+                system = _SYSTEM_PROMPT
+                template = get_template(request.template_name)
+                if template is not None:
+                    purposes = ", ".join(s.purpose for s in template.slides)
+                    system = (
+                        f"Structure the deck following the "
+                        f"'{request.template_name}' template structure. "
+                        f"Sections to include: {purposes}.\n\n"
+                    ) + system
+                if attempt > 0:
+                    system = system + (
+                        "\nFix the previous output to match the schema exactly."
+                    )
                 payload = {
                     "model": self._model,
                     "messages": [
@@ -297,7 +306,7 @@ class OfflineSpecProvider(SpecProvider):
             hints.append("pricing")
 
         # Build a layout sequence. Always start with hero, end optionally with cta.
-        pool = hints if hints else ["statistics", "cards", "timeline", "comparison", "quote", "bullets", "process"]
+        pool = hints if hints else ["statistics", "cards", "timeline", "comparison", "quote", "process"]
         layouts: list[str] = ["hero"]
 
         # Body slides.

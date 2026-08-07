@@ -14,28 +14,6 @@ def test_settings_defaults_are_safe() -> None:
     assert s.ai_provider_default_model == "deepseek-v4-flash-free"
 
 
-def test_sqlalchemy_uri_assembles_from_components() -> None:
-    s = Settings(
-        _env_file=None,
-        db_user="u",
-        db_password="p",
-        db_host="h",
-        db_port=5433,
-        db_name="n",
-    )
-    uri = s.sqlalchemy_database_uri
-    assert uri.startswith("postgresql+asyncpg://u:p@h:5433/n")
-
-
-def test_sqlalchemy_uri_uses_explicit_database_url() -> None:
-    s = Settings(
-        _env_file=None,
-        database_url="postgresql+asyncpg://explicit/db",
-        db_user="ignored",
-    )
-    assert s.sqlalchemy_database_uri == "postgresql+asyncpg://explicit/db"
-
-
 def test_is_production_flag() -> None:
     assert Settings(_env_file=None, app_env="production").is_production is True
     assert Settings(_env_file=None, app_env="development").is_production is False
