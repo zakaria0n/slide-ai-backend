@@ -48,6 +48,26 @@ LAYOUTS = [
     "conclusion", "thank-you",
 ]
 
+# Compact, copy-pasteable shape guide the model is told to follow when it
+# supplies "new_elements". Mirrors app.generation.spec.ElementType exactly.
+ELEMENT_SHAPES = """Each element MUST have a valid "type" (one of: title, subtitle, paragraph, bullets, image, cards, timeline, comparison, quote, statistics, code, table, diagram, icon).
+Field shapes by type:
+- title: {"type":"title","text":"...","level":1}
+- subtitle: {"type":"subtitle","text":"..."}
+- paragraph: {"type":"paragraph","text":"..."}
+- bullets: {"type":"bullets","items":["...","..."]}
+- image: {"type":"image","src":null,"alt":"...","caption":null}
+- cards: {"type":"cards","items":[{"title":"...","body":"..."}]}
+- timeline: {"type":"timeline","items":[{"year":"...","text":"..."}]}
+- comparison: {"type":"comparison","left":{"title":"...","points":[...]},"right":{"title":"...","points":[...]}}
+- quote: {"type":"quote","text":"...","author":"..."}
+- statistics: {"type":"statistics","items":[{"value":"...","label":"..."}]}
+- code: {"type":"code","code":"...","language":"..."}
+- table: {"type":"table","headers":[...],"rows":[[...]]}
+- diagram: {"type":"diagram","kind":"...","nodes":[...]}
+- icon: {"type":"icon","icon":"...","label":"..."}
+IMPORTANT: the type for cards is "cards" (with an s), never "card"."""
+
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
@@ -64,7 +84,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "theme": {"type": "string", "description": f"New theme: {', '.join(THEMES)}"},
                     "new_elements": {
                         "type": "array",
-                        "description": "Replace the slide's elements with these new ones",
+                        "description": f"Replace the slide's elements with these new ones. {ELEMENT_SHAPES}",
                         "items": {"type": "object"},
                     },
                 },
@@ -175,6 +195,22 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "remove_element",
+            "description": "Remove a specific element/section from a slide by matching its text or title. Use this for targeted deletions instead of rebuilding the whole slide. Provide either element_text (text contained in the element) or element_type, or both.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "slide_index": {"type": "integer", "description": "0-based slide index"},
+                    "element_text": {"type": "string", "description": "Substring that identifies the element to remove (e.g. a card title, list item, paragraph text). Elements whose text/title/items contain this string are removed."},
+                    "element_type": {"type": "string", "description": "Optional type filter: title, subtitle, paragraph, bullets, image, cards, timeline, comparison, quote, statistics, code, table, diagram, icon. Only elements of this type matching are removed."},
+                },
+                "required": ["slide_index", "element_text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_slide_detail",
             "description": "Get the full content (all elements) of a specific slide. Use this when you need to see the full slide before deciding how to edit it.",
             "parameters": {
@@ -215,15 +251,20 @@ async def execute_update_slide(
             )
 
     # Validate incoming new_elements through the discriminated union so
-    # arbitrary dicts cannot be persisted as elements.
+    # arbitrary dicts cannot be persisted as elements. Normalize common model
+    # mistakes first (e.g. "card" -> "cards") so a near-miss still succeeds.
     new_elements_validated: list[Element] | None = None
     if "new_elements" in kwargs and kwargs["new_elements"] is not None:
-        try:
-            new_elements_validated = [
-                _element_adapter.validate_python(el) for el in kwargs["new_elements"]
-            ]
-        except Exception as exc:
-            return ToolResult(spec, f"Invalid elements: {exc}", success=False)
+        elements = _validate_elements(kwargs["new_elements"])
+        if elements is None:
+            return ToolResult(
+                spec,
+                "Invalid elements. Follow the element shape guide exactly: "
+                "use type \"cards\" (never \"card\") and include the required "
+                "fields shown in the tool description.",
+                success=False,
+            )
+        new_elements_validated = elements
 
     modified = copy.deepcopy(spec)
     slide = modified.slides[slide_index]
@@ -360,6 +401,68 @@ async def execute_reduce_text(
     return ToolResult(modified, f"Reduced text on {len(set(changed))} slide(s)", changed_indexes=list(set(changed)))
 
 
+async def execute_remove_element(
+    spec: PresentationSpec, slide_index: int, element_text: str, **kwargs: Any,
+) -> ToolResult:
+    """Removes only matching element(s), never the whole slide.
+
+    Removes the elements within the slide whose text/title/items contain
+    ``element_text``. Optionally filtered by ``element_type``.
+    """
+    if slide_index < 0 or slide_index >= len(spec.slides):
+        return ToolResult(spec, f"Invalid slide index {slide_index}", success=False)
+
+    from app.generation.spec import ElementType
+    allowed = set(ElementType.__args__)
+    etype = kwargs.get("element_type")
+    if etype and etype not in allowed:
+        return ToolResult(spec, f"Invalid element_type '{etype}'", success=False)
+
+    target = str(element_text).strip().lower()
+    if not target:
+        return ToolResult(spec, "No element_text provided", success=False)
+
+    modified = copy.deepcopy(spec)
+    slide = modified.slides[slide_index]
+
+    def _match(el: Any) -> bool:
+        if etype and (getattr(el, "type", None) or el.get("type")) != etype:
+            return False
+
+        # Flatten every string reachable from the element into one bag of text.
+        data = el.model_dump() if hasattr(el, "model_dump") else el
+        texts: list[str] = []
+
+        def walk(node: Any) -> None:
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    if k == "type" or k == "id" or k == "animation":
+                        continue
+                    walk(v)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item)
+            elif isinstance(node, str):
+                texts.append(node)
+
+        walk(data)
+        return any(target in t.lower() for t in texts)
+
+    idxs = [i for i, el in enumerate(slide.elements) if _match(el)]
+    removed = []
+    for i in sorted(idxs, reverse=True):
+        removed.append(slide.elements.pop(i))
+
+    if not removed:
+        return ToolResult(spec, f"No element matching \"{element_text}\" found on slide {slide_index + 1}", success=False)
+
+    return ToolResult(
+        modified,
+        f"Removed {len(removed)} element(s) matching \"{element_text}\" from slide {slide_index + 1}",
+        changed_indexes=[slide_index],
+    )
+
+
 async def execute_get_slide_detail(
     spec: PresentationSpec, slide_index: int, **kwargs: Any,
 ) -> ToolResult:
@@ -386,6 +489,7 @@ TOOL_EXECUTORS: dict[str, Any] = {
     "change_theme": execute_change_theme,
     "rewrite_titles": execute_rewrite_titles,
     "reduce_text": execute_reduce_text,
+    "remove_element": execute_remove_element,
     "get_slide_detail": execute_get_slide_detail,
 }
 
@@ -417,6 +521,53 @@ def _set_title(slide: Any, title: str) -> None:
             return
     # No title element — prepend one
     slide.elements.insert(0, _element_adapter.validate_python({"type": "title", "text": title, "level": 1}))
+
+
+def _normalize_element(el: dict) -> dict:
+    """Tolerate the small mistakes LLMs make when fabricating elements, so a
+    slightly-off tool call doesn't fail the whole update.
+
+    Maps common bad type strings to the real ElementType and fills in the
+    minimal required fields a model tends to omit.
+    """
+    if not isinstance(el, dict):
+        return {"type": "paragraph", "text": str(el)}
+
+    t = (el.get("type") or "").strip().lower()
+    canonical = {
+        "card": "cards", "bullet": "bullets", "image": "image",
+        "stat": "statistics", "stats": "statistics",
+        "timeline": "timeline", "table": "table",
+    }
+    if t in canonical:
+        el = dict(el)
+        el["type"] = canonical[t]
+
+    if el["type"] == "cards" and isinstance(el.get("items"), list):
+        items = []
+        for it in el["items"]:
+            if isinstance(it, dict):
+                if isinstance(it.get("title"), dict):
+                    items.append({"title": str(it["title"].get("text", "")), "body": str(it.get("body") or "")})
+                else:
+                    items.append({"title": str(it.get("title") or ""), "body": str(it.get("body") or it.get("text") or "")})
+            else:
+                items.append({"title": "", "body": str(it)})
+        el["items"] = items
+
+    return el
+
+
+def _validate_elements(elements: list[dict]) -> list[Element] | None:
+    """Validate incoming elements, tolerating common model quirks.
+
+    Returns the validated list, or None if validation still fails even after
+    normalization (caller then reports the error to the model).
+    """
+    try:
+        return [_element_adapter.validate_python(_normalize_element(el)) for el in elements]
+    except Exception:
+        return None
 
 
 def _get_title_text(slide: Any) -> str:

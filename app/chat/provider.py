@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator
@@ -16,6 +17,7 @@ import httpx
 from app.chat.tools import TOOL_DEFINITIONS
 from app.core.config import Settings
 
+logger = logging.getLogger("slideai.chat.provider")
 DISPLAYED_PROVIDER = "Slide AI"
 
 
@@ -31,6 +33,7 @@ class StreamChunk:
     type: str  # "token" | "tool_calls" | "done" | "error"
     delta: str = ""
     tool_calls: list[ToolCallInfo] = field(default_factory=list)
+    reasoning_content: str = ""
 
 
 class ChatProvider(ABC):
@@ -84,6 +87,7 @@ class OnlineChatProvider(ChatProvider):
 
                 content_buf = ""
                 tool_calls_buf: dict[int, dict] = {}  # index -> {id, name, arguments}
+                reasoning_buf: list[str] = []
 
                 async for line in resp.aiter_lines():
                     if not line.startswith("data: "):
@@ -95,34 +99,56 @@ class OnlineChatProvider(ChatProvider):
                     try:
                         chunk = json.loads(data)
                     except json.JSONDecodeError:
+                        logger.warning("provider: non-JSON SSE line: %.200s", data)
                         continue
 
                     choices = chunk.get("choices", [])
                     if not choices:
                         continue
                     delta = choices[0].get("delta", {})
+                    finish = choices[0].get("finish_reason")
+                    if finish:
+                        logger.info("provider: finish_reason=%r tool_calls_buf=%s", finish, list(tool_calls_buf))
+                    else:
+                        logger.debug("provider: delta keys=%s", list(delta.keys()))
 
                     # Content delta
                     if delta.get("content"):
                         content_buf += delta["content"]
                         yield StreamChunk(type="token", delta=delta["content"])
+                    # Deepseek-style reasoning streamed separately from content.
+                    # Must be preserved so we can echo it back on the assistant
+                    # tool-call message (the API rejects tool_results without it).
+                    rc = delta.get("reasoning_content")
+                    if rc:
+                        reasoning_buf.append(rc)
 
                     # Tool call deltas (OpenAI streams these in fragments)
-                    if "tool_calls" in delta:
-                        for tc_delta in delta["tool_calls"]:
-                            idx = tc_delta.get("index", 0)
-                            if idx not in tool_calls_buf:
-                                tool_calls_buf[idx] = {"id": "", "name": "", "arguments": ""}
+                    try:
+                        if delta.get("tool_calls"):
+                            for tc_delta in delta["tool_calls"]:
+                                idx = tc_delta.get("index", 0)
+                                if idx not in tool_calls_buf:
+                                    tool_calls_buf[idx] = {"id": "", "name": "", "arguments": ""}
 
-                            entry = tool_calls_buf[idx]
-                            if "id" in tc_delta:
-                                entry["id"] += tc_delta["id"]
-                            if "function" in tc_delta:
-                                func = tc_delta["function"]
-                                if "name" in func:
-                                    entry["name"] += func["name"]
-                                if "arguments" in func:
-                                    entry["arguments"] += func["arguments"]
+                                entry = tool_calls_buf[idx]
+                                # BEWARE: OpenAI-compatible providers emit fragments where
+                                # id/name/arguments can be null in any given chunk (e.g. the
+                                # name arrives in chunk 1, arguments in chunk 2..n, and extra
+                                # chunks send {"name": null}). Concatenating None would throw,
+                                # so only append when the value is a non-empty string.
+                                if tc_delta.get("id"):
+                                    entry["id"] += tc_delta["id"]
+                                func = tc_delta.get("function") or {}
+                                name_val = func.get("name")
+                                args_val = func.get("arguments")
+                                if name_val:
+                                    entry["name"] += name_val
+                                if args_val:
+                                    entry["arguments"] += args_val
+                    except Exception as tc_err:
+                        # Never let a malformed tool-call fragment kill the stream.
+                        logger.warning("provider: tool-call fragment error: %r", tc_err)
 
                 # Emit collected tool calls
                 if tool_calls_buf:
@@ -132,13 +158,16 @@ class OnlineChatProvider(ChatProvider):
                         try:
                             args = json.loads(entry["arguments"]) if entry["arguments"] else {}
                         except json.JSONDecodeError:
+                            logger.warning("provider: bad tool args JSON for %s: %.300s", entry["name"], entry["arguments"])
                             args = {}
                         # Some providers omit the tool_call id. Synthesize a
                         # stable one so multi-turn loops can match tool calls
                         # to their results.
                         call_id = entry["id"] or f"call_{idx}"
                         calls.append(ToolCallInfo(id=call_id, name=entry["name"], arguments=args))
-                    yield StreamChunk(type="tool_calls", tool_calls=calls)
+                    logger.info("provider: emitting %d tool call(s): %s", len(calls), [c.name for c in calls])
+                    reasoning = "".join(reasoning_buf)
+                    yield StreamChunk(type="tool_calls", tool_calls=calls, reasoning_content=reasoning)
 
                 yield StreamChunk(type="done")
 

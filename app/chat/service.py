@@ -7,6 +7,7 @@ iteration cap is reached.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, AsyncGenerator
 
 from supabase import AsyncClient
@@ -17,6 +18,8 @@ from app.chat.provider import ChatProvider, StreamChunk, ToolCallInfo
 from app.chat.tools import ToolResult, dispatch_tool
 from app.generation.spec import PresentationSpec
 from app.presentations.versioning import snapshot_if_changed
+
+logger = logging.getLogger("slideai.chat.service")
 
 # Maximum agent loop iterations to prevent runaway execution.
 _MAX_AGENT_ITERATIONS = 10
@@ -103,6 +106,7 @@ class ChatService:
         all_tool_results: list[dict] = []  # [{name, success, summary}]
         full_text = ""
         iteration = 0
+        stopped_by_cap = False
 
         # Snapshot the pre-edit spec once so we can persist a version row
         # if any tool mutates it during this turn.
@@ -111,11 +115,15 @@ class ChatService:
         prev_turn_sig: list[tuple[str, str]] | None = None
 
         try:
-            while iteration < _MAX_AGENT_ITERATIONS:
+            while True:
+                if iteration >= _MAX_AGENT_ITERATIONS:
+                    stopped_by_cap = True
+                    break
                 iteration += 1
 
                 # 5a. Stream LLM response
                 turn_text = ""
+                turn_reasoning = ""
                 turn_tool_calls: list[ToolCallInfo] = []
 
                 try:
@@ -126,6 +134,7 @@ class ChatService:
                             yield _sse("token", {"delta": chunk.delta})
                         elif chunk.type == "tool_calls":
                             turn_tool_calls = chunk.tool_calls
+                            turn_reasoning = chunk.reasoning_content
                         elif chunk.type == "error":
                             yield _sse("error", {"message": chunk.delta})
                             if not turn_tool_calls:
@@ -138,9 +147,9 @@ class ChatService:
                     yield _sse("token", {"delta": f"\n\n(A provider error occurred: {provider_err}. Continuing with what we have so far.)"})
                     break
 
-                # 5b. If no tool calls → agent is done
                 if not turn_tool_calls:
                     break
+                logger.info("turn %d: %d tool call(s) -> %s", iteration, len(turn_tool_calls), [t.name for t in turn_tool_calls])
 
                 # 5c. Execute all tools in this turn
                 turn_results: list[dict] = []
@@ -150,6 +159,7 @@ class ChatService:
                     result: ToolResult = await dispatch_tool(tc.name, tc.arguments, spec)
                     spec = result.spec
                     all_tool_calls.append(tc)
+                    logger.info("tool %r success=%s summary=%.200s", tc.name, result.success, result.summary)
 
                     tool_result = {
                         "name": tc.name,
@@ -185,7 +195,12 @@ class ChatService:
                 # 5e. Feed tool results back to the LLM and continue the loop.
                 # Append the assistant message (with its tool_calls) followed
                 # by one tool-role result per call, in the same order.
-                llm_messages.append({
+                # DeepSeek thinking-mode requires the assistant tool-call turn's
+                # original reasoning_content to be echoed verbatim on the follow-up
+                # request; a null/omitted value is the classic cause of a 400 here.
+                # Include the key ONLY when a non-empty reasoning string was
+                # captured for this turn — never emit it as null.
+                assistant_msg: dict = {
                     "role": "assistant",
                     "content": turn_text or None,
                     "tool_calls": [
@@ -199,7 +214,10 @@ class ChatService:
                         }
                         for tc in turn_tool_calls
                     ],
-                })
+                }
+                if turn_reasoning:
+                    assistant_msg["reasoning_content"] = turn_reasoning
+                llm_messages.append(assistant_msg)
                 for tc, result in zip(turn_tool_calls, turn_results):
                     llm_messages.append({
                         "role": "tool",
@@ -230,6 +248,26 @@ class ChatService:
         except Exception as exc:
             yield _sse("error", {"message": f"AI provider error: {exc}"})
             return
+
+        # If the agent hit the iteration cap without ending cleanly, surface a
+        # visible note so the frontend is never left hanging silently. If the
+        # last thing the model did was request a tool that never finished, tell
+        # the user how to resume instead of looping forever.
+        if stopped_by_cap:
+            if all_tool_calls:
+                note = (
+                    "\n\n(I've reached the tool-call limit for this turn. "
+                    "Everything requested has been applied. "
+                    "Ask me to 'continue' and I'll carry on from here.)"
+                )
+            else:
+                note = (
+                    "\n\n(I've reached the step limit for this turn. "
+                    "The requested work may be incomplete — ask me to "
+                    "'continue' to finish it.)"
+                )
+            full_text += note
+            yield _sse("token", {"delta": note})
 
         # 6. Persist assistant message
         tc_data = (

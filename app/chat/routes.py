@@ -73,6 +73,7 @@ async def chat_stream(
     presentation_id: UUID,
     req: SendChatRequest,
     oid: UUID = Depends(owner_id),
+    supabase_client=Depends(supabase),
     service: ChatService = Depends(_chat_service),
 ) -> StreamingResponse:
     """SSE streaming endpoint for the AI chat."""
