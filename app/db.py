@@ -272,16 +272,20 @@ async def get_workspace(client: AsyncClient, workspace_id: UUID, *, owner_id: UU
 
 
 async def list_workspaces(client: AsyncClient, user_id: UUID) -> list[dict]:
-    """Return the workspaces the user belongs to (owner or member)."""
+    """Return the workspaces the user belongs to (owner or member).
+
+    Each row includes the caller's ``role`` in that workspace.
+    """
     resp = (
         await client.table("workspace_members")
-        .select("workspace_id")
+        .select("workspace_id", "role")
         .eq("user_id", str(user_id))
         .execute()
     )
     ws_ids = [str(r["workspace_id"]) for r in (resp.data or [])]
     if not ws_ids:
         return []
+    role_by_id = {str(r["workspace_id"]): r.get("role") for r in (resp.data or [])}
     resp = (
         await client.table("workspaces")
         .select("*")
@@ -289,7 +293,10 @@ async def list_workspaces(client: AsyncClient, user_id: UUID) -> list[dict]:
         .order("created_at", desc=True)
         .execute()
     )
-    return resp.data  # type: ignore[return-value]
+    workspaces = list(resp.data or [])
+    for w in workspaces:
+        w["role"] = role_by_id.get(str(w["id"]), "member")
+    return workspaces
 
 
 async def create_workspace(client: AsyncClient, **fields: Any) -> dict:

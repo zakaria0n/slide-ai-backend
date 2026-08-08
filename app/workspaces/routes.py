@@ -26,6 +26,7 @@ class WorkspaceResponse(BaseModel):
     id: str
     name: str
     created_at: str
+    role: str = "member"
 
 
 class WorkspaceListResponse(BaseModel):
@@ -151,7 +152,15 @@ async def list_workspaces(
     workspaces = await db.list_workspaces(supabase, owner_id)
 
     return WorkspaceListResponse(
-        workspaces=[WorkspaceResponse(id=str(w["id"]), name=w["name"], created_at=w["created_at"]) for w in workspaces]
+        workspaces=[
+            WorkspaceResponse(
+                id=str(w["id"]),
+                name=w["name"],
+                created_at=w["created_at"],
+                role=str(w.get("role", "member")),
+            )
+            for w in workspaces
+        ]
     )
 
 
@@ -436,6 +445,28 @@ async def remove_member(
     await db.delete_member(supabase, workspace_id, user_id)
     await db.create_audit_entry(
         supabase, workspace_id=str(workspace_id), actor_id=str(owner_id), action="remove_member", target=str(user_id)
+    )
+
+
+@router.post("/{workspace_id}/leave", status_code=204)
+async def leave_workspace(
+    workspace_id: UUID,
+    owner_id: UUID = Depends(_owner_id),
+    supabase: AsyncClient = Depends(_supabase),
+) -> None:
+    """Remove the caller from the workspace. The owner cannot leave."""
+    member = await db.get_member(supabase, workspace_id, owner_id)
+    if member is None:
+        raise NotFoundError("Workspace not found")
+    if member["role"] == "owner":
+        raise ForbiddenError("The workspace owner cannot leave")
+    await db.delete_member(supabase, workspace_id, owner_id)
+    await db.create_audit_entry(
+        supabase,
+        workspace_id=str(workspace_id),
+        actor_id=str(owner_id),
+        action="leave_workspace",
+        target=str(owner_id),
     )
 
 

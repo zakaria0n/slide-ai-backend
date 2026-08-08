@@ -44,7 +44,10 @@ class SupabaseStorageGateway(StorageGateway):
         await self._client.storage.from_(self._bucket).upload(
             path,
             data,
-            file_options=FileOptions(content_type=content_type or "application/octet-stream", upsert=True),
+            file_options=FileOptions(
+                content_type=content_type or "application/octet-stream",
+                upsert="true",
+            ),
         )
 
     async def delete(self, path: str) -> None:

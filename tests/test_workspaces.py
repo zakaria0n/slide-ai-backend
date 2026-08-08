@@ -185,6 +185,43 @@ def test_remove_member(client: TestClient) -> None:
     assert len(members.json()["members"]) == 1  # only owner
 
 
+def test_leave_workspace(client: TestClient) -> None:
+    owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    member_uid = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    member_email = "leaver@example.com"
+    headers = _auth(_token(owner))
+    member_headers = _auth(_token(member_uid, email=member_email))
+
+    ws = client.post("/api/v1/workspaces", json={"name": "WS"}, headers=headers).json()
+    wid = ws["id"]
+    inv = client.post(
+        f"/api/v1/workspaces/{wid}/invitations",
+        json={"email": member_email, "role": "viewer"},
+        headers=headers,
+    ).json()
+    client.post(f"/api/v1/workspaces/invitations/{inv['id']}/accept", headers=member_headers)
+
+    res = client.post(f"/api/v1/workspaces/{wid}/leave", headers=member_headers)
+    assert res.status_code == 204
+
+    members = client.get(f"/api/v1/workspaces/{wid}/members", headers=headers)
+    assert len(members.json()["members"]) == 1  # only owner remains
+
+    listing = client.get("/api/v1/workspaces", headers=member_headers)
+    assert listing.json()["workspaces"] == []  # leaver no longer sees it
+
+
+def test_owner_cannot_leave(client: TestClient) -> None:
+    owner = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    headers = _auth(_token(owner))
+
+    ws = client.post("/api/v1/workspaces", json={"name": "WS"}, headers=headers).json()
+    wid = ws["id"]
+
+    res = client.post(f"/api/v1/workspaces/{wid}/leave", headers=headers)
+    assert res.status_code == 403
+
+
 def test_audit_log(client: TestClient) -> None:
     owner = "88888888-8888-8888-8888-888888888888"
     member_uid = "99999999-9999-9999-9999-999999999999"
