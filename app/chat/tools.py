@@ -481,6 +481,19 @@ async def execute_get_slide_detail(
 # Registry
 # ---------------------------------------------------------------------------
 
+# Tools that mutate the presentation spec. Anything not in this set is
+# read-only (currently just `get_slide_detail`).
+_WRITE_TOOLS = {
+    "update_slide",
+    "add_slide",
+    "delete_slide",
+    "move_slide",
+    "change_theme",
+    "rewrite_titles",
+    "reduce_text",
+    "remove_element",
+}
+
 TOOL_EXECUTORS: dict[str, Any] = {
     "update_slide": execute_update_slide,
     "add_slide": execute_add_slide,
@@ -492,6 +505,18 @@ TOOL_EXECUTORS: dict[str, Any] = {
     "remove_element": execute_remove_element,
     "get_slide_detail": execute_get_slide_detail,
 }
+
+
+def tool_definitions_for_role(role: str | None) -> list[dict[str, Any]]:
+    """Return the OpenAI tool definitions the caller is allowed to use.
+
+    Editors/admins/owners get the full set. Viewers (and any unknown role)
+    get only read-only tools — the model literally cannot emit an edit tool
+    call because the tool is not in its menu.
+    """
+    if role in ("owner", "admin", "editor"):
+        return list(TOOL_DEFINITIONS)
+    return [t for t in TOOL_DEFINITIONS if t["function"]["name"] not in _WRITE_TOOLS]
 
 
 async def dispatch_tool(

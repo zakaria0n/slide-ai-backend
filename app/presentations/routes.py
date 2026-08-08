@@ -164,9 +164,12 @@ async def get_presentation(
     presentation_id: UUID,
     owner_id: UUID = Depends(_owner_id),
     service: PresentationService = Depends(_service),
+    supabase: AsyncClient = Depends(_supabase),
 ) -> PresentationResponse:
     p = await service.get(presentation_id, owner_id)
-    return PresentationResponse.from_entity(p)
+    resp = PresentationResponse.from_entity(p)
+    resp.access_role = await db.get_presentation_access_role(supabase, presentation_id, owner_id)
+    return resp
 
 
 @router.get("/{presentation_id}/spec", response_model=PresentationSpec)

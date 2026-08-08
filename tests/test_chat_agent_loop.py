@@ -45,7 +45,7 @@ class ScriptedProvider:
         self._turns = list(turns)
         self.call_count = 0
 
-    async def stream_chat(self, messages: list[dict]):
+    async def stream_chat(self, messages: list[dict], **kwargs):
         self.call_count += 1
         if self.call_count <= len(self._turns):
             for chunk in self._turns[self.call_count - 1]:
@@ -133,7 +133,7 @@ async def test_agent_loop_stops_on_iteration_cap(fake_supabase) -> None:
         def __init__(self) -> None:
             self.call_count = 0
 
-        async def stream_chat(self, messages: list[dict]):
+        async def stream_chat(self, messages: list[dict], **kwargs):
             self.call_count += 1
             yield StreamChunk(type="token", delta=f"Adding slide {self.call_count}. ")
             yield StreamChunk(
@@ -176,7 +176,7 @@ async def test_cap_surfaces_visible_continue_message(fake_supabase) -> None:
         def __init__(self) -> None:
             self.call_count = 0
 
-        async def stream_chat(self, messages: list[dict]):
+        async def stream_chat(self, messages: list[dict], **kwargs):
             self.call_count += 1
             yield StreamChunk(
                 type="tool_calls",
@@ -214,7 +214,7 @@ async def test_tool_error_fed_back_to_model(fake_supabase) -> None:
             self.call_count = 0
             self.seen_tool_result = False
 
-        async def stream_chat(self, messages: list[dict]):
+        async def stream_chat(self, messages: list[dict], **kwargs):
             self.call_count += 1
             if self.call_count == 1:
                 # The failure is produced by the real dispatch_tool (out of range).

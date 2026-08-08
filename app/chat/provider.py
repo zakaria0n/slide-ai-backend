@@ -41,6 +41,8 @@ class ChatProvider(ABC):
     async def stream_chat(
         self,
         messages: list[dict],
+        *,
+        tools: list[dict] | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         ...
 
@@ -57,12 +59,17 @@ class OnlineChatProvider(ChatProvider):
     async def stream_chat(
         self,
         messages: list[dict],
+        *,
+        tools: list[dict] | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
+        # Caller may filter the tool menu (e.g. read-only tools for viewers).
+        # Default to the full set for backwards compatibility.
+        active_tools = tools if tools is not None else TOOL_DEFINITIONS
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             payload: dict[str, Any] = {
                 "model": self._model,
                 "messages": messages,
-                "tools": TOOL_DEFINITIONS,
+                "tools": active_tools,
                 "tool_choice": "auto",
                 "stream": True,
                 "temperature": 0.6,
@@ -188,6 +195,8 @@ class OfflineChatProvider(ChatProvider):
     async def stream_chat(
         self,
         messages: list[dict],
+        *,
+        tools: list[dict] | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         # Get the last user message
         user_msg = ""
@@ -195,6 +204,10 @@ class OfflineChatProvider(ChatProvider):
             if m.get("role") == "user":
                 user_msg = m.get("content", "").lower()
                 break
+        # In offline mode the tool filter still matters: figure out whether
+        # the caller is a viewer (only read tools passed) so we can skip any
+        # edit tool suggestion below.
+        is_read_only = tools is not None and tools != TOOL_DEFINITIONS
 
         if not user_msg:
             yield StreamChunk(type="done", delta="How can I help?")
@@ -209,33 +222,44 @@ class OfflineChatProvider(ChatProvider):
 
         # Theme change — require an explicit action verb + theme name so a
         # question like "explain the dark theme" doesn't trigger a rewrite.
-        from app.chat.tools import THEMES
-        action_verbs = ("make it", "change to", "change the", "switch to", "apply", "use the")
-        if any(v in user_msg for v in action_verbs):
-            for theme in THEMES:
-                if theme in user_msg:
-                    yield StreamChunk(type="token", delta=f"Changing theme to ")
-                    yield StreamChunk(type="token", delta=theme)
-                    yield StreamChunk(type="token", delta="...")
-                    yield StreamChunk(
-                        type="tool_calls",
-                        tool_calls=[ToolCallInfo(name="change_theme", arguments={"theme_name": theme})],
-                    )
-                    yield StreamChunk(type="done")
-                    return
+        # Skipped entirely for read-only callers (no edit tools available).
+        if not is_read_only:
+            from app.chat.tools import THEMES
+            action_verbs = ("make it", "change to", "change the", "switch to", "apply", "use the")
+            if any(v in user_msg for v in action_verbs):
+                for theme in THEMES:
+                    if theme in user_msg:
+                        yield StreamChunk(type="token", delta=f"Changing theme to ")
+                        yield StreamChunk(type="token", delta=theme)
+                        yield StreamChunk(type="token", delta="...")
+                        yield StreamChunk(
+                            type="tool_calls",
+                            tool_calls=[ToolCallInfo(name="change_theme", arguments={"theme_name": theme})],
+                        )
+                        yield StreamChunk(type="done")
+                        return
 
-        # Add slide
-        if "add" in user_msg and "slide" in user_msg:
-            yield StreamChunk(type="token", delta="Adding a new slide...")
-            yield StreamChunk(
-                type="tool_calls",
-                tool_calls=[ToolCallInfo(name="add_slide", arguments={"layout": "title", "title": "New Slide"})],
+            # Add slide
+            if "add" in user_msg and "slide" in user_msg:
+                yield StreamChunk(type="token", delta="Adding a new slide...")
+                yield StreamChunk(
+                    type="tool_calls",
+                    tool_calls=[ToolCallInfo(name="add_slide", arguments={"layout": "title", "title": "New Slide"})],
+                )
+                yield StreamChunk(type="done")
+                return
+
+        # Read-only callers (or anyone whose request didn't match an edit
+        # intent) get a conversational reply.
+        if is_read_only:
+            text = (
+                "You have view-only access to this presentation, so I can't "
+                "edit it for you. I can still answer questions, summarise "
+                "slides, or suggest improvements — what would you like to "
+                "explore?"
             )
-            yield StreamChunk(type="done")
-            return
-
-        # Default conversational response
-        text = "I can help you edit your presentation. Try saying 'make it modern', 'add a slide', or 'improve slide 3'."
+        else:
+            text = "I can help you edit your presentation. Try saying 'make it modern', 'add a slide', or 'improve slide 3'."
         async for chunk in self._emit_text(text):
             yield chunk
         yield StreamChunk(type="done")

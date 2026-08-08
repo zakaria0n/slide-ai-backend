@@ -16,6 +16,10 @@ class ChatMessageResponse(BaseModel):
 class ChatListResponse(BaseModel):
     messages: list[ChatMessageResponse]
     total: int
+    # Caller's effective role on this presentation (owner/admin/editor/viewer)
+    # or None when the caller has no access at all. Drives whether the AI
+    # panel shows edit affordances.
+    access_role: str | None = None
 
 
 class SendChatRequest(BaseModel):

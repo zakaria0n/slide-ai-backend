@@ -47,7 +47,10 @@ async def list_chat(
     oid: UUID = Depends(owner_id),
     supabase_client=Depends(supabase),
 ) -> ChatListResponse:
-    await _require_presentation(supabase_client, presentation_id, oid)
+    row = await _require_presentation(supabase_client, presentation_id, oid)
+    # surface the caller's role so the frontend can hide edit affordances
+    # for viewers without waiting for the first 403.
+    role = await db.get_presentation_access_role(supabase_client, presentation_id, oid)
 
     messages = await db.list_chat_messages(
         supabase_client, presentation_id, owner_id=str(oid),
@@ -65,6 +68,7 @@ async def list_chat(
             for m in messages
         ],
         total=len(messages),
+        access_role=role,
     )
 
 
@@ -76,11 +80,16 @@ async def chat_stream(
     supabase_client=Depends(supabase),
     service: ChatService = Depends(_chat_service),
 ) -> StreamingResponse:
-    """SSE streaming endpoint for the AI chat."""
+    """SSE streaming endpoint for the AI chat.
+
+    Open to viewers too — the service filters tools by role so a viewer can
+    chat (ask questions, get summaries) without ever being able to mutate
+    the deck.
+    """
     from app.core.ratelimit import generation_limiter
     generation_limiter.check(str(oid))
 
-    row = await _require_presentation(supabase_client, presentation_id, oid, write=True)
+    row = await _require_presentation(supabase_client, presentation_id, oid)
 
     return StreamingResponse(
         service.send_message_streaming(

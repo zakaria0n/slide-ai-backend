@@ -29,6 +29,7 @@ class PresentationResponse(BaseModel):
     theme: str | None
     created_at: datetime
     updated_at: datetime
+    access_role: str | None = None
 
     @classmethod
     def from_entity(cls, p: Presentation) -> "PresentationResponse":

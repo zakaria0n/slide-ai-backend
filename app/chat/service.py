@@ -73,9 +73,10 @@ class ChatService:
         if role is None:
             yield _sse("error", {"message": "Presentation not found"})
             return
-        if role not in ("owner", "admin", "editor"):
-            yield _sse("error", {"message": "You have read-only access to this presentation"})
-            return
+        # Note: viewers are NOT rejected here. They can chat in read-only mode:
+        # the system prompt is augmented with a "do not edit" instruction and
+        # the tool menu is filtered to read-only tools only, so the model
+        # literally cannot emit an edit tool call.
 
         spec_raw = row.get("spec")
         if not spec_raw:
@@ -97,8 +98,15 @@ class ChatService:
             self._client, pid, owner_id=oid, limit=max_history,
         )
 
-        # 4. Build initial LLM context
-        llm_messages = build_llm_messages(db_messages, spec, current_slide_index, max_history)
+        # 4. Build initial LLM context — pass the role so viewers get the
+        # read-only system-prompt suffix.
+        llm_messages = build_llm_messages(
+            db_messages, spec, current_slide_index, max_history, role=role,
+        )
+        # Filter the tool menu by role. Viewers only see read tools.
+        from app.chat.tools import tool_definitions_for_role
+        allowed_tools = tool_definitions_for_role(role)
+        allowed_tool_names = {t["function"]["name"] for t in allowed_tools}
 
         # 5. Agent loop
         spec_changed = False
@@ -127,7 +135,9 @@ class ChatService:
                 turn_tool_calls: list[ToolCallInfo] = []
 
                 try:
-                    async for chunk in self._provider.stream_chat(llm_messages):
+                    async for chunk in self._provider.stream_chat(
+                        llm_messages, tools=allowed_tools
+                    ):
                         if chunk.type == "token":
                             turn_text += chunk.delta
                             full_text += chunk.delta
@@ -154,6 +164,24 @@ class ChatService:
                 # 5c. Execute all tools in this turn
                 turn_results: list[dict] = []
                 for tc in turn_tool_calls:
+                    # Defense-in-depth: even though the tool menu was filtered
+                    # by role, an LLM can still hallucinate a tool name. Block
+                    # any tool the caller's role doesn't allow.
+                    if tc.name not in allowed_tool_names:
+                        yield _sse("tool_call", {"name": tc.name, "arguments": tc.arguments})
+                        blocked = {
+                            "name": tc.name,
+                            "success": False,
+                            "summary": (
+                                "Blocked: your role on this presentation is "
+                                f"'{role}', which cannot call '{tc.name}'."
+                            ),
+                        }
+                        turn_results.append(blocked)
+                        all_tool_results.append(blocked)
+                        yield _sse("tool_result", blocked)
+                        continue
+
                     yield _sse("tool_call", {"name": tc.name, "arguments": tc.arguments})
 
                     result: ToolResult = await dispatch_tool(tc.name, tc.arguments, spec)
