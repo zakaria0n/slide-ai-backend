@@ -45,10 +45,10 @@ class SpecProvider(ABC):
 _SCHEMA_HINT = """\
 Return ONLY valid JSON (no markdown fences, no commentary) with this exact shape:
 {
-  "meta": {"title": "<concise deck title>", "theme": "<theme_name>|null", "background": null, "language": "<lang>", "tone": "<tone>"},
+  "meta": {"title": "<concise deck title>", "theme": "<theme_name>|null", "background": null, "language": "<lang>", "tone": "<tone>", "customAnimations": [{"name": "<anim_name>", "keyframes": "@keyframes <anim_name> { ... }", "duration": <ms>, "easing": "<easing>"}]},
   "slides": [
     {
-      "layout": "<one of: hero, title, agenda, section, timeline, comparison, cards, statistics, pricing, gallery, process, flow, roadmap, team, quote, swot, table, chart, image-left, image-right, cta, conclusion, thank-you>",
+      "layout": "<one of: hero, title, agenda, section, timeline, comparison, cards, statistics, pricing, gallery, process, flow, roadmap, team, quote, swot, table, chart, image-left, image-right, cta, conclusion, thank-you, custom>",
       "background": null,
       "theme": null,
       "notes": "<speaker notes or null>",
@@ -140,6 +140,9 @@ DESIGN RULES — follow these strictly:
    - Cards should have distinct, meaningful titles — not "Point 1", "Point 2".
    - Timeline entries need real-looking years/labels and descriptive text.
    - Comparisons should have balanced, substantive points on each side.
+   - layout=chart renders as a REAL interactive chart (Chart.js): give 3–6
+     items with SHORT axis labels and clean numeric values where possible
+     ("38" or "38.4" rather than "about 38ms") — units belong in the label.
 
 8. THEME AWARENESS:
    - If a theme is specified, tailor the content style to match.
@@ -147,6 +150,51 @@ DESIGN RULES — follow these strictly:
    - For startup themes: bold claims, growth metrics, vision language.
    - For education themes: clear explanations, structured learning.
    - For minimal themes: less text, more white space, fewer elements per slide.
+
+9. CUSTOM ANIMATIONS (your creative toolset — use it):
+   - Define custom keyframe animations in meta.customAnimations and attach them
+     to elements via "animation": "<anim_name>". This is YOUR tool for making
+     decks feel alive — use it on hero titles, key statistics, and CTA slides.
+   - You may animate ANY CSS property. transform/opacity/filter are the
+     smoothest (GPU-accelerated), but box-shadow glows, color shimmers,
+     letter-spacing reveals and background-position sweeps are all welcome.
+   - The ONLY forbidden things are security hazards: NEVER include url(...),
+     expression(...), javascript:, @import or external references inside
+     keyframes — those are stripped.
+   - "duration": milliseconds 100–4000 (typical 400–900; up to 1500 for hero
+     drama; longer for slow ambient loops). Out-of-range values are clamped,
+     never dropped.
+   - "easing": any timing function — cubic-bezier(...) for personality
+     (overshoot y-values like 1.56 give playful bounce), linear for rotations/
+     loops/shimmer sweeps, steps(...) for retro reveals. If you omit it you get
+     a premium expo-out.
+   - Start hidden at 0% (opacity 0 and/or off-transform/scale) and settle fully
+     visible and at-rest at 100% so text stays crisp after the entrance.
+   - Be expressive but focused: 1–3 signature animations per deck beats one per
+     element. Give each deck its own motion identity matching its tone.
+
+10. CUSTOM-CODED SLIDES (layout="custom" — full creative freedom):
+   - For 1–2 SHOWPIECE slides per deck (hero, product reveal, data showcase)
+     you may write REAL CODE instead of using elements:
+       {"layout": "custom", "elements": [], "notes": "...",
+        "code": {"html": "...", "css": "...", "js": "..."}}
+   - The slide runs in its own sandboxed frame: the iframe IS the 16:9 slide
+     (width/height 100%). You control everything — layout, gradients, canvas,
+     SVG, WebGL, particles, animated charts.
+   - Preloaded for you: Chart.js (global `Chart`), anime.js v4 (global `anime`)
+     and the deck theme as CSS variables (--bg, --surface, --text, --accent,
+     --accent2, --gradient, --font-heading...) plus window.__THEME__.
+   - Entrance choreography: when the slide becomes visible the body gets class
+     `is-active` and a `slide:activate` event fires on window. Start elements
+     hidden (opacity 0 / transformed) in CSS, then run your entrance on that
+     event. ALWAYS end settled: fully visible, readable, nothing mid-flight.
+     Example: document.addEventListener('slide:activate', () =>
+     anime({targets:'.reveal', opacity:[0,1], translateY:[40,0], delay:anime.stagger(90)}));
+   - HARD RULES (sandbox enforces them anyway): no external network requests
+     (no CDN/fetch/img URLs), no localStorage/cookies, no access to parent.
+     Everything self-contained in your html/css/js strings.
+   - Use custom slides SPARINGLY and purposefully; keep regular structured
+     layouts for content-heavy slides so decks stay consistent and editable.
 
 FEW-SHOT EXAMPLES — the level of specificity and density expected:
 
@@ -237,6 +285,47 @@ Example C — topic "startup pitch for a coffee brand" (3 slides):
       ]}
     ]}
   ]
+}
+
+Example D — topic "product launch keynote" showing CUSTOM ANIMATIONS (3 slides):
+{
+  "meta": {"title": "Aurora Engine Launch", "theme": "startup", "background": null, "language": "English", "tone": "Bold",
+    "customAnimations": [
+      {"name": "riseGlow", "keyframes": "@keyframes riseGlow { 0% { opacity: 0; transform: translateY(36px) scale(0.96); filter: blur(6px) } 60% { opacity: 1; filter: blur(0px) } 100% { opacity: 1; transform: none; filter: none } }", "duration": 700, "easing": "cubic-bezier(0.16, 1, 0.3, 1)"},
+      {"name": "glowPulse", "keyframes": "@keyframes glowPulse { 0% { opacity: 0; box-shadow: 0 0 0 rgba(64,220,255,0) } 60% { opacity: 1; box-shadow: 0 0 44px rgba(64,220,255,.55) } 100% { opacity: 1; box-shadow: 0 0 16px rgba(64,220,255,.3) } }", "duration": 900, "easing": "cubic-bezier(0.16, 1, 0.3, 1)"},
+      {"name": "popIn", "keyframes": "@keyframes popIn { 0%, 20% { opacity: 0; transform: scale(0.6) } 80%, 100% { opacity: 1; transform: scale(1) } }", "duration": 450, "easing": "ease-out"}
+    ]},
+  "slides": [
+    {"layout": "hero", "elements": [
+      {"type": "title", "text": "Aurora: Real-Time Rendering, Reimagined", "level": 1, "animation": "riseGlow"},
+      {"type": "subtitle", "text": "4.2× faster scenes, zero GPU upgrades"}
+    ]},
+    {"layout": "statistics", "elements": [
+      {"type": "title", "text": "Why Teams Are Switching", "level": 2},
+      {"type": "statistics", "items": [
+        {"value": "4.2×", "label": "Faster render on the same hardware"},
+        {"value": "38ms", "label": "Avg frame time in heavy scenes"},
+        {"value": "12k", "label": "Studios on the early-access list"},
+        {"value": "99.98%", "label": "Uptime across the public beta"}
+      ]}
+    ]},
+    {"layout": "conclusion", "elements": [
+      {"type": "title", "text": "Early Access Now Open", "level": 2, "animation": "glowPulse"},
+      {"type": "paragraph", "text": "Join 12,000 studios shaping the future of real-time graphics."}
+    ]}
+  ]
+}
+
+Example E — CUSTOM-CODED showpiece slide (inside the slides array):
+{
+  "layout": "custom",
+  "elements": [],
+  "notes": "Hero reveal with animated counter and orbiting particles.",
+  "code": {
+    "html": "<div class='stage'><canvas id='orbit'></canvas><div class='center'><h1 class='reveal'>Aurora Engine</h1><p class='reveal'>Real-time rendering at <span id='fps'>0</span> fps</p></div></div>",
+    "css": ".stage{position:relative;width:100%;height:100%;background:radial-gradient(ellipse at 50% 120%, #1a0b2e, var(--bg));overflow:hidden}.center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.reveal{opacity:0}h1{font-family:var(--font-heading);font-size:clamp(40px,6vw,84px);margin:0;background:var(--gradient);-webkit-background-clip:text;background-clip:text;color:transparent}p{color:var(--text-muted)}canvas{position:absolute;inset:0}",
+    "js": "document.addEventListener('slide:activate', function(){ anime({targets:'.reveal',opacity:[0,1],translateY:[36,0],delay:anime.stagger(140,{start:150}),duration:800,easing:'outExpo'}); var o={v:0},el=document.getElementById('fps'); anime({targets:o,v:144,duration:1400,easing:'outExpo',update:function(){el.textContent=Math.round(o.v)}}); });"
+  }
 }
 """
 

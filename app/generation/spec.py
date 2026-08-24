@@ -50,6 +50,7 @@ LayoutName = Literal[
     "cta",
     "conclusion",
     "thank-you",
+    "custom",
 ]
 
 ElementType = Literal[
@@ -200,6 +201,14 @@ Element = Union[
 # --- Slide & Presentation ------------------------------------------------
 
 
+class CustomSlideCode(BaseModel):
+    """Free-coded slide payload (layout='custom')."""
+
+    html: str = ""
+    css: str = ""
+    js: str = ""
+
+
 class SlideSpec(BaseModel):
     """One slide in the specification."""
 
@@ -208,6 +217,9 @@ class SlideSpec(BaseModel):
     theme: str | None = None
     elements: list[Element] = Field(default_factory=list)
     notes: str | None = None
+    # Only for layout="custom": AI-authored HTML/CSS/JS rendered in a sandboxed
+    # iframe on the frontend. No validation by design — the sandbox is the guard.
+    code: CustomSlideCode | None = None
 
 
 class PresentationMeta(BaseModel):
@@ -218,6 +230,24 @@ class PresentationMeta(BaseModel):
     background: str | None = None
     language: str = "English"
     tone: str = "Professional"
+    # AI-authored custom animations. Each is validated (CSS-parsed, property
+    # whitelist, duration/easing bounds) on the frontend; invalid defs are
+    # dropped silently and the element falls back to a built-in animation.
+    # Kept camelCase to match the frontend spec shape exactly.
+    customAnimations: list["CustomAnimationDef"] | None = None
+
+
+class CustomAnimationDef(BaseModel):
+    """A named keyframe animation the model can attach to elements."""
+
+    name: str = ""
+    # Raw "@keyframes <name> { ... }" rule (or just the body). Only transform,
+    # opacity and filter are allowed inside. Must stay small.
+    keyframes: str = ""
+    # Animation length in milliseconds (validated: 100–2000ms).
+    duration: int = 0
+    # Timing function — a cubic-bezier(...), steps(...) or non-linear keyword.
+    easing: str | None = None
 
 
 class PresentationSpec(BaseModel):

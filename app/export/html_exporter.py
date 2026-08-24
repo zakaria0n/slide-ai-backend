@@ -60,6 +60,35 @@ def _anim_delay(index: float) -> str:
     return f"animation-delay:{index * 0.1}s;"
 
 
+def _custom_slide_srcdoc(code: dict, t: ThemeTokens) -> str:
+    """Build the srcdoc for an AI free-coded slide (layout='custom').
+
+    Mirrors the frontend CustomCodeFrame contract: theme tokens as CSS
+    variables, `is-active` on body, and a slide:activate event. Chart.js /
+    anime.js are NOT bundled here (the exported file stays dependency-free);
+    authored JS that references them degrades to its static markup.
+    """
+    vars_css = (
+        f"--bg:{t.bg};--surface:{t.surface};--surface2:{t.surface2};--border:{t.border};"
+        f"--text:{t.text};--text-muted:{t.text_muted};--accent:{t.accent};--accent2:{t.accent2};"
+        f"--font-heading:{t.font_heading};--font-body:{t.font_body};"
+    )
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'><style>"
+        f":root {{{vars_css}}}"
+        "html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;"
+        "background:var(--bg);color:var(--text);font-family:var(--font-body),system-ui,sans-serif}"
+        "</style>"
+        f"<style>{code.get('css', '')}</style></head>"
+        f"<body>{code.get('html', '')}"
+        "<script>window.addEventListener('load',function(){"
+        "document.body.classList.add('is-active');"
+        "window.dispatchEvent(new CustomEvent('slide:activate'));});</script>"
+        f"<script>try{{{code.get('js', '')}}}catch(e){{console.error(e)}}</script>"
+        "</body></html>"
+    )
+
+
 def _anim_css() -> str:
     """Generate all animation keyframes and base rules."""
     return """
@@ -199,13 +228,28 @@ def render_spec_html(spec: PresentationSpec, theme: ThemeTokens, animate: bool =
         # Per-slide theme override
         slide_theme_name = s.get("theme")
         t = tokens_for(slide_theme_name) if slide_theme_name else global_t
+        bg = s.get("background") or t.bg
+
+        # AI free-coded slide (layout="custom"): embed the authored code
+        # verbatim inside an isolated iframe so its scripts/styles can't leak.
+        code = s.get("code") or {}
+        if s.get("layout") == "custom" and isinstance(code, dict) and (code.get("html") or code.get("css") or code.get("js")):
+            srcdoc = _custom_slide_srcdoc(code, t)
+            slides_html.append(
+                f'<section class="slide print-break" data-slide '
+                f'style="background:{bg};border-radius:{t.radius_lg};position:relative;overflow:hidden">'
+                f'<iframe sandbox="allow-scripts" style="border:0;position:absolute;inset:0;width:100%;height:100%" '
+                f'srcdoc="{html.escape(srcdoc, quote=True)}"></iframe>'
+                f'</section>'
+            )
+            continue
+
         g = _group(s)
         # Title is rendered inside _render_complex (which prepends it). Only
         # subtitle + paragraph go here so the title isn't emitted twice.
         body = _render_elements(g.get("subtitle", []) + g.get("paragraph", []), t)
         body += _render_complex(s, g, t)
         body += _render_elements([e for et in ("bullets", "quote", "code", "table", "image", "icon", "diagram") for e in g.get(et, [])], t, i0=10)
-        bg = s.get("background") or t.bg
         slides_html.append(
             f'<section class="slide print-break" data-slide '
             f'style="background:{bg};border-radius:{t.radius_lg};border:1px solid {t.border};'

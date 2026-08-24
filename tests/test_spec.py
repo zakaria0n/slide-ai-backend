@@ -94,6 +94,65 @@ async def test_offline_provider_returns_valid_spec() -> None:
     assert {s.layout for s in spec.slides} != {"title"}
 
 
+def test_custom_animations_round_trip() -> None:
+    """The AI's camelCase customAnimations survive validation + serialization."""
+    data = {
+        "meta": {
+            "title": "Aurora Engine Launch",
+            "customAnimations": [
+                {
+                    "name": "riseGlow",
+                    "keyframes": "@keyframes riseGlow { 0% { opacity: 0; transform: translateY(36px) scale(0.96) } 100% { opacity: 1; transform: none } }",
+                    "duration": 700,
+                    "easing": "cubic-bezier(0.16, 1, 0.3, 1)",
+                }
+            ],
+        },
+        "slides": [
+            {
+                "layout": "hero",
+                "elements": [{"type": "title", "text": "Aurora", "level": 1, "animation": "riseGlow"}],
+            }
+        ],
+    }
+    spec = PresentationSpec.validate_spec(data)
+    assert spec.meta.customAnimations is not None
+    anim = spec.meta.customAnimations[0]
+    assert anim.name == "riseGlow"
+    assert anim.duration == 700
+    out = spec.model_dump(mode="json")
+    # The wire format must keep the camelCase key the frontend reads.
+    assert "customAnimations" in out["meta"]
+    assert out["meta"]["customAnimations"][0]["name"] == "riseGlow"
+    # Element animation reference is preserved.
+    assert out["slides"][0]["elements"][0]["animation"] == "riseGlow"
+
+
+def test_custom_code_slide_round_trip() -> None:
+    """layout='custom' slides keep their free-coded html/css/js payload."""
+    data = {
+        "meta": {"title": "Showpiece"},
+        "slides": [
+            {
+                "layout": "custom",
+                "elements": [],
+                "code": {
+                    "html": "<div class='stage'><h1>Hi</h1></div>",
+                    "css": ".stage{width:100%;height:100%}",
+                    "js": "console.log('activate')",
+                },
+            }
+        ],
+    }
+    spec = PresentationSpec.validate_spec(data)
+    slide = spec.slides[0]
+    assert slide.layout == "custom"
+    assert slide.code is not None
+    assert "<h1>Hi</h1>" in slide.code.html
+    out = spec.model_dump(mode="json")
+    assert out["slides"][0]["code"]["css"] == ".stage{width:100%;height:100%}"
+
+
 def test_build_spec_provider_selects_online_for_public_key() -> None:
     settings = Settings(_env_file=None, ai_provider_api_key="public")
     provider = build_spec_provider(settings)

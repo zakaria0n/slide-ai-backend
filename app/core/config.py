@@ -45,11 +45,11 @@ class Settings(BaseSettings):
     # --- AI provider (exposed to users as "Slide AI") ---
     ai_provider_base_url: str = "https://opencode.ai/zen/v1"
     ai_provider_api_key: str = "public"
-    ai_provider_default_model: str = "deepseek-v4-flash-free"
+    ai_provider_default_model: str = "x-preview-f-free"
     # Models that may be selected by the application. The real model name is
     # shown to users; only the *provider name* is hidden ("Slide AI").
     ai_allowed_models: list[str] = Field(
-        default_factory=lambda: ["deepseek-v4-flash-free"]
+        default_factory=lambda: ["x-preview-f-free"]
     )
     ai_request_timeout_seconds: float = 120.0
 

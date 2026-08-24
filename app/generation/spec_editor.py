@@ -63,6 +63,8 @@ RULES:
 8. If the instruction says to change layout, change the layout field of the target slide.
 9. Always respond with a short summary of what you changed as a top-level "summary" field.
 10. Return a "changed_indexes" array of slide indices (0-based) that were modified.
+11. Preserve meta.customAnimations exactly unless the instruction explicitly asks to change animations. Each custom animation entry is {name, keyframes, duration, easing}. You may animate any CSS property; the only forbidden content is url(...)/expression(...)/javascript:/@import (security).
+12. Slides with layout="custom" carry their own code in slide.code ({html, css, js}). Preserve that code EXACTLY unless the instruction asks to change that specific slide — do not rewrite or "improve" working code unprompted.
 
 Response shape:
 {
