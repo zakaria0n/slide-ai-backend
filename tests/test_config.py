@@ -11,7 +11,7 @@ def test_settings_defaults_are_safe() -> None:
     assert s.ai_provider_api_key == "public"
     assert s.app_env == "development"
     assert s.displayed_provider_name == "Slide AI"
-    assert s.ai_provider_default_model == "x-preview-f-free"
+    assert s.ai_provider_default_model == "nemotron-3-ultra-free"
 
 
 def test_is_production_flag() -> None:

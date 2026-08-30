@@ -101,6 +101,28 @@ class JWTVerifier:
             meta["full_name"] = claims["full_name"]
         return User(id=uid, email=email, metadata=meta)
 
+    def mint_access_token(self, user_id: UUID, email: str, *, expires_in_seconds: int, full_name: str | None = None) -> str:
+        """Mint a long-lived access token signed with the same secret and
+        audience as the session verifier.
+
+        Used for personal access tokens (e.g. a 72h MCP token) so external
+        tools keep working without refreshing a 1h login session.
+        """
+        import time as _time
+
+        now = int(_time.time())
+        claims: dict[str, object] = {
+            "sub": str(user_id),
+            "email": email,
+            "role": "authenticated",
+            "aud": "authenticated",
+            "iat": now,
+            "exp": now + expires_in_seconds,
+        }
+        if full_name:
+            claims["full_name"] = full_name
+        return jwt.encode(claims, self._secret, algorithm="HS256")
+
     @staticmethod
     def _user_id_from(claims: dict[str, object]) -> UUID:
         raw = str(claims.get("sub", ""))

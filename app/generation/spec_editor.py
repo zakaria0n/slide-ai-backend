@@ -7,6 +7,7 @@ Providers:
 """
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 from abc import ABC, abstractmethod
@@ -20,7 +21,9 @@ from app.core.exceptions import ProviderError
 from app.generation.spec import PresentationSpec
 
 DISPLAYED_PROVIDER = "Slide AI"
-_MAX_RETRIES = 1
+_MAX_RETRIES = 2
+_RETRY_BACKOFF_S = [3.0, 8.0]
+_TRANSIENT_STATUS = {429, 500, 502, 503, 504}
 
 
 @dataclass
@@ -41,6 +44,8 @@ class SpecEditProvider(ABC):
         spec: PresentationSpec,
         instruction: str,
         target_indexes: list[int] | None = None,
+        *,
+        model: str | None = None,
     ) -> SpecEditResult:
         ...
 
@@ -63,8 +68,9 @@ RULES:
 8. If the instruction says to change layout, change the layout field of the target slide.
 9. Always respond with a short summary of what you changed as a top-level "summary" field.
 10. Return a "changed_indexes" array of slide indices (0-based) that were modified.
-11. Preserve meta.customAnimations exactly unless the instruction explicitly asks to change animations. Each custom animation entry is {name, keyframes, duration, easing}. You may animate any CSS property; the only forbidden content is url(...)/expression(...)/javascript:/@import (security).
-12. Slides with layout="custom" carry their own code in slide.code ({html, css, js}). Preserve that code EXACTLY unless the instruction asks to change that specific slide — do not rewrite or "improve" working code unprompted.
+11. You have FULL creative freedom on animations and placement — no style filter, only a security sandbox. Preserve meta.customAnimations exactly unless the instruction touches animations; when it does, author whatever the user described: each custom animation entry is {name, keyframes, duration, easing} — ANY CSS property is allowed (transform, opacity, filter, color, box-shadow, clip-path...); only url(...)/expression(...)/javascript:/@import are forbidden. Apply animations via the "animation" field on elements (built-ins: fade, slide, scale, zoom, rotate, blur, reveal, typing, counter, gradient, parallax, sequential — or your custom names).
+12. Elements may carry free Canvas-style placement: "x" and "y" (percent of the slide) and "w" (width percent). Elements with x/y float freely over the slide — use this for precise positioning, layered compositions or badges.
+13. Slides with layout="custom" carry their own code in slide.code ({html, css, js}). Preserve that code EXACTLY unless the instruction asks to change that specific slide — do not rewrite or "improve" working code unprompted.
 
 Response shape:
 {
@@ -76,10 +82,21 @@ Response shape:
 """
 
 
+_CUSTOM_MODE_SUFFIX = """
+
+CREATIVE FREEDOM MODE (meta.theme = 'custom'):
+This deck uses the 'custom' theme - you have FULL creative freedom: prefer
+layout="custom" slides with your own HTML/CSS/JS (slide.code), author your
+own keyframe animations in meta.customAnimations, and place elements freely
+with x/y/w. The only hard rules: keep the slide count and the user's subject.
+"""
+
+
 class OnlineSpecEditProvider(SpecEditProvider):
     """Real LLM-based spec editor."""
 
     def __init__(self, settings: Settings) -> None:
+        self._settings = settings
         self._base_url = settings.ai_provider_base_url.rstrip("/")
         self._api_key = settings.ai_provider_api_key
         self._model = settings.ai_provider_default_model
@@ -90,7 +107,21 @@ class OnlineSpecEditProvider(SpecEditProvider):
         spec: PresentationSpec,
         instruction: str,
         target_indexes: list[int] | None = None,
+        *,
+        model: str | None = None,
+        brand_context: str | None = None,
     ) -> SpecEditResult:
+        from app.core.model_catalog import resolve_model
+
+        model = await resolve_model(self._settings, model)
+        system = _EDIT_SYSTEM_PROMPT + (
+            _CUSTOM_MODE_SUFFIX if spec.meta.theme == "custom" else ""
+        )
+        if brand_context:
+            system += chr(10) + chr(10) + brand_context
+        system = _EDIT_SYSTEM_PROMPT + (
+            _CUSTOM_MODE_SUFFIX if spec.meta.theme == "custom" else ""
+        )
         spec_json = spec.model_dump(mode="json")
 
         user_msg = (
@@ -103,7 +134,7 @@ class OnlineSpecEditProvider(SpecEditProvider):
         last_error: Exception | None = None
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             for attempt in range(_MAX_RETRIES + 1):
-                system = _EDIT_SYSTEM_PROMPT + (
+                system = system + (
                     "\n\nThe previous response was invalid JSON or missing fields. "
                     "Fix it and return valid JSON only."
                     if attempt > 0
@@ -117,7 +148,7 @@ class OnlineSpecEditProvider(SpecEditProvider):
                             "Content-Type": "application/json",
                         },
                         json={
-                            "model": self._model,
+                            "model": model,
                             "messages": [
                                 {"role": "system", "content": system},
                                 {"role": "user", "content": user_msg},
@@ -127,10 +158,17 @@ class OnlineSpecEditProvider(SpecEditProvider):
                         },
                     )
                 except httpx.HTTPError as exc:
+                    # Retry transient network/timeout failures (free-tier hiccups).
+                    if attempt < _MAX_RETRIES:
+                        await asyncio.sleep(_RETRY_BACKOFF_S[min(attempt, len(_RETRY_BACKOFF_S) - 1)])
+                        continue
                     raise ProviderError(
                         f"{DISPLAYED_PROVIDER} is temporarily unavailable"
                     ) from exc
 
+                if resp.status_code in _TRANSIENT_STATUS and attempt < _MAX_RETRIES:
+                    await asyncio.sleep(_RETRY_BACKOFF_S[min(attempt, len(_RETRY_BACKOFF_S) - 1)])
+                    continue
                 if resp.status_code != 200:
                     raise ProviderError(f"{DISPLAYED_PROVIDER} returned an error")
 
@@ -206,6 +244,8 @@ class OfflineSpecEditProvider(SpecEditProvider):
         spec: PresentationSpec,
         instruction: str,
         target_indexes: list[int] | None = None,
+        *,
+        model: str | None = None,
     ) -> SpecEditResult:
         lowered = instruction.lower().strip()
         modified = copy.deepcopy(spec)

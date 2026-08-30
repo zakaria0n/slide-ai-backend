@@ -22,13 +22,14 @@ from __future__ import annotations
 
 from typing import Any, Literal, Union
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 # --- Element union ---------------------------------------------------------
 
 LayoutName = Literal[
     "hero",
     "title",
+    "blank",
     "agenda",
     "section",
     "timeline",
@@ -59,6 +60,9 @@ ElementType = Literal[
     "paragraph",
     "bullets",
     "image",
+    "video",
+    "audio",
+    "shape",
     "cards",
     "timeline",
     "comparison",
@@ -71,11 +75,41 @@ ElementType = Literal[
 ]
 
 
+class ElementStyle(BaseModel):
+    """Optional per-element style overrides (structured layouts).
+
+    All fields optional — anything unset inherits from the theme tokens.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    color: str | None = Field(default=None, max_length=60)
+    font_size: str | None = Field(default=None, max_length=24)
+    font_weight: str | None = Field(default=None, max_length=12)
+    align: Literal["left", "center", "right", "justify"] | None = None
+    opacity: float | None = Field(default=None, ge=0, le=1)
+    rotation: float | None = Field(default=None, ge=-360, le=360)
+
+
 class _BaseElement(BaseModel):
     """Shared element fields."""
 
     id: str | None = None
     animation: str | None = Field(default=None, max_length=40)
+    # Extra delay (ms) before this element's entrance animation starts,
+    # on top of the automatic stagger.
+    animation_delay: int | None = Field(default=None, ge=0, le=10000)
+    # Per-element style overrides.
+    style: ElementStyle | None = None
+    # Free (Canvas-style) placement, in percent of the slide size. When set,
+    # the element is rendered as a floating overlay instead of inside the
+    # layout flow — this is how manually inserted elements are positioned.
+    x: float | None = Field(default=None, ge=0, le=100)
+    y: float | None = Field(default=None, ge=0, le=100)
+    # Fixed width in percent of the slide width (text wrap / image sizing).
+    w: float | None = Field(default=None, ge=1, le=100)
+    # Fixed height in percent of the slide height (shapes / media).
+    h: float | None = Field(default=None, ge=1, le=100)
 
 
 class TitleElement(_BaseElement):
@@ -102,8 +136,43 @@ class BulletsElement(_BaseElement):
 class ImageElement(_BaseElement):
     type: Literal["image"] = "image"
     src: str | None = None  # optional: asset reference / placeholder id
+    # Stable reference to a file_assets row. Signed URLs expire — when this
+    # is set, renderers/exports resolve a FRESH src from the file id instead
+    # of trusting the possibly-expired src.
+    file_id: str | None = Field(default=None, max_length=80)
     alt: str = ""
     caption: str | None = None
+    # Light image controls: horizontal mirror + CSS object-position.
+    flip: bool = False
+    object_position: str | None = Field(default=None, max_length=40)
+
+
+class VideoElement(_BaseElement):
+    type: Literal["video"] = "video"
+    src: str | None = None
+    file_id: str | None = Field(default=None, max_length=80)
+    alt: str = ""
+    poster: str | None = None
+    # Start playing automatically when the slide becomes active (muted).
+    autoplay: bool = False
+
+
+class AudioElement(_BaseElement):
+    type: Literal["audio"] = "audio"
+    src: str | None = None
+    file_id: str | None = Field(default=None, max_length=80)
+    alt: str = ""
+
+
+class ShapeElement(_BaseElement):
+    """Simple vector shapes for free (Canvas-style) composition."""
+
+    type: Literal["shape"] = "shape"
+    shape: Literal["rect", "circle", "line", "arrow"] = "rect"
+    # Fill color — defaults to the theme accent.
+    fill: str | None = Field(default=None, max_length=60)
+    # Border color for rect/circle (defaults to fill at 40% alpha look).
+    border_color: str | None = Field(default=None, max_length=60)
 
 
 # --- Inner element payloads -------------------------------------------------
@@ -195,6 +264,9 @@ Element = Union[
     TableElement,
     DiagramElement,
     IconElement,
+    VideoElement,
+    AudioElement,
+    ShapeElement,
 ]
 
 
@@ -248,6 +320,19 @@ class CustomAnimationDef(BaseModel):
     duration: int = 0
     # Timing function — a cubic-bezier(...), steps(...) or non-linear keyword.
     easing: str | None = None
+    # Extra delay (ms) before the animation starts.
+    delay: int = Field(default=0, ge=0, le=5000)
+    # Repeat count — a positive integer or the literal "infinite".
+    loop: int | str = Field(default=1)
+
+    @field_validator("loop")
+    @classmethod
+    def _validate_loop(cls, value):
+        if isinstance(value, str):
+            if value.lower() == "infinite":
+                return "infinite"
+            raise ValueError("loop must be a positive integer or 'infinite'")
+        return max(1, min(int(value), 50))
 
 
 class PresentationSpec(BaseModel):

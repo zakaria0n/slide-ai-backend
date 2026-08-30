@@ -22,7 +22,7 @@ _MAX_BYTES = 50 * 1024 * 1024  # 50 MB
 _ALLOWED_EXT = {
     ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp",
     ".pptx", ".ppt", ".docx", ".doc", ".txt", ".csv", ".md",
-    ".svg", ".mp3", ".mp4",
+    ".svg", ".mp3", ".mp4", ".webm", ".wav", ".m4a", ".ogg",
 }
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 
@@ -94,6 +94,50 @@ class FileService:
         if row is None or row["owner_id"] != str(owner_id):
             raise NotFoundError("File not found")
         return row
+
+
+async def resolve_spec_image_urls(
+    client: AsyncClient,
+    storage,
+    spec,
+    owner_id: UUID,
+    *,
+    expires_in: int = 24 * 3600,
+):
+    """Replace expiring image srcs with fresh signed URLs.
+
+    Image elements carry a stable ``file_id``; their ``src`` is a signed URL
+    that expires. Walk the spec, and for every image with a file_id owned by
+    ``owner_id`` mint a fresh URL (default 24h — enough for any render or
+    export). Unknown/unowned ids are left untouched.
+    """
+    from app.generation.spec import ImageElement
+    from uuid import UUID as _UUID
+
+    cache: dict[str, str] = {}
+    for slide in spec.slides:
+        for i, el in enumerate(slide.elements):
+            if not isinstance(el, ImageElement):
+                continue
+            fid = el.file_id
+            if not fid or el.src is None:
+                continue
+            try:
+                file_uuid = _UUID(fid)
+            except ValueError:
+                continue
+            if fid not in cache:
+                row = await db.get_file_asset(client, file_uuid)
+                if row is None or row["owner_id"] != str(owner_id):
+                    cache[fid] = el.src
+                else:
+                    try:
+                        info = await storage.create_signed_url(row["storage_path"], expires_in=expires_in)
+                        cache[fid] = info if isinstance(info, str) else info.get("url", el.src)
+                    except Exception:
+                        cache[fid] = el.src
+            slide.elements[i] = el.model_copy(update={"src": cache[fid]})
+    return spec
 
 
 def _ext(filename: str) -> str:

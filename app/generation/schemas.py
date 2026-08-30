@@ -20,3 +20,8 @@ class GenerationRequest(BaseModel):
     language: str = Field(default="English", max_length=_LANG_MAX)
     theme: str | None = Field(default=None, max_length=40)
     template_name: str | None = Field(default=None, max_length=40)
+    # Model the caller picked on the settings page. None → backend default.
+    model: str | None = Field(default=None, max_length=80)
+    # Optional source material (markdown / extracted web page text) the deck
+    # must be based on — used by the import endpoint.
+    source_content: str | None = Field(default=None, max_length=20000)

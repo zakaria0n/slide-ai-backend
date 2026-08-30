@@ -601,3 +601,87 @@ async def delete_chat_messages(
     if owner_id is not None:
         q = q.eq("owner_id", owner_id)
     await q.execute()
+
+
+async def get_brand_kit(client: AsyncClient, user_id: UUID) -> dict | None:
+    resp = (
+        await client.table("user_brand_kits")
+        .select("*")
+        .eq("user_id", str(user_id))
+        .limit(1)
+        .execute()
+    )
+    rows: list[dict] = resp.data
+    return rows[0] if rows else None
+
+
+async def upsert_brand_kit(client: AsyncClient, user_id: UUID, **fields: Any) -> dict:
+    payload = {"user_id": str(user_id), **fields, "updated_at": "now()"}
+    payload = {k: v for k, v in payload.items() if v is not None or k == "user_id"}
+    resp = (
+        await client.table("user_brand_kits")
+        .upsert(payload)
+        .execute()
+    )
+    rows: list[dict] = resp.data
+    return rows[0] if rows else {}
+
+
+async def create_mcp_job(client: AsyncClient, *, id: str, user_id: str, status: str) -> dict:
+    resp = (
+        await client.table("mcp_jobs")
+        .insert({"id": id, "user_id": user_id, "status": status})
+        .execute()
+    )
+    rows: list[dict] = resp.data
+    return rows[0] if rows else {}
+
+
+async def update_mcp_job(client: AsyncClient, job_id: str, **fields: Any) -> None:
+    await client.table("mcp_jobs").update(fields).eq("id", job_id).execute()
+
+
+async def get_mcp_job(client: AsyncClient, job_id: str) -> dict | None:
+    resp = (
+        await client.table("mcp_jobs")
+        .select("*")
+        .eq("id", job_id)
+        .limit(1)
+        .execute()
+    )
+    rows: list[dict] = resp.data
+    return rows[0] if rows else None
+
+
+async def increment_share_views(client: AsyncClient, token: str) -> None:
+    row = await get_share_by_token(client, token)
+    if row is None:
+        return
+    await (
+        client.table("presentation_shares")
+        .update({"view_count": int(row.get("view_count") or 0) + 1})
+        .eq("token", token)
+        .execute()
+    )
+
+
+async def create_share_comment(client: AsyncClient, *, share_token: str, author_name: str | None, content: str) -> dict:
+    resp = (
+        await client.table("share_comments")
+        .insert({"share_token": share_token, "author_name": author_name, "content": content})
+        .execute()
+    )
+    rows: list[dict] = resp.data
+    return rows[0] if rows else {}
+
+
+async def list_share_comments(client: AsyncClient, share_token: str, *, limit: int = 100) -> list[dict]:
+    resp = (
+        await client.table("share_comments")
+        .select("*")
+        .eq("share_token", share_token)
+        .order("created_at", desc=False)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data

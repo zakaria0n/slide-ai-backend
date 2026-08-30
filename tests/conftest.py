@@ -27,6 +27,9 @@ class FakeTable:
     def insert(self, data: dict | list[dict]) -> FakeQuery:
         return FakeQuery(self).insert(data)
 
+    def upsert(self, data: dict | list[dict]) -> FakeQuery:
+        return FakeQuery(self).upsert(data)
+
     def update(self, data: dict) -> FakeQuery:
         return FakeQuery(self).update(data)
 
@@ -59,6 +62,7 @@ class FakeQuery:
         self._order_col: str | None = None
         self._order_desc: bool = False
         self._insert_data: dict | list[dict] | None = None
+        self._is_upsert = False
         self._update_data: dict | None = None
         self._is_delete = False
 
@@ -94,6 +98,12 @@ class FakeQuery:
         q._insert_data = data
         return q
 
+    def upsert(self, data: dict | list[dict]) -> FakeQuery:
+        q = copy.copy(self)
+        q._insert_data = data
+        q._is_upsert = True
+        return q
+
     def update(self, data: dict) -> FakeQuery:
         q = copy.copy(self)
         q._update_data = data
@@ -127,6 +137,12 @@ class FakeQuery:
                 d.setdefault("id", str(uuid4()))
                 d.setdefault("created_at", datetime.now(timezone.utc).isoformat())
                 d.setdefault("updated_at", datetime.now(timezone.utc).isoformat())
+                if self._is_upsert:
+                    # Replace any existing row sharing the same natural key.
+                    for key in ("user_id", "id"):
+                        if key in d:
+                            rows[:] = [r for r in rows if r.get(key) != d[key]]
+                            break
                 rows.append(dict(d))
             return FakeResult(data=[dict(d) for d in data])
 
@@ -208,6 +224,9 @@ def client(tmp_path, fake_supabase) -> "TestClient":
         app_env="test",
         cors_allowed_origins=["http://localhost:5173"],
         supabase_jwt_secret="test-secret",
+        # Hermetic tests: empty API key selects the deterministic offline
+        # providers — no network calls to the AI provider from the suite.
+        ai_provider_api_key="",
     )
     app = create_app(settings)
     with TestClient(app) as c:

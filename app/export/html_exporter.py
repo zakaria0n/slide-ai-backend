@@ -89,6 +89,103 @@ def _custom_slide_srcdoc(code: dict, t: ThemeTokens) -> str:
     )
 
 
+_FORBIDDEN_CSS = ("url(", "expression(", "javascript:", "@import", "behavior:")
+
+
+def _custom_anim_map(meta) -> dict:
+    """Validated {name: {keyframes, duration, easing, loop, delay}} from meta.
+
+    Lite sanitization only: the frontend has the full CSS parser; here we
+    drop forbidden constructs and unbalanced braces.
+    """
+    out: dict = {}
+    for raw in (getattr(meta, "customAnimations", None) or [])[:24]:
+        d = raw.model_dump() if hasattr(raw, "model_dump") else raw
+        name = str(d.get("name") or "").strip()
+        kf = str(d.get("keyframes") or "").strip()
+        low = kf.lower()
+        if not name or not kf:
+            continue
+        if any(bad in low for bad in _FORBIDDEN_CSS):
+            continue
+        depth = 0
+        balanced = True
+        for ch in kf:
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth < 0:
+                    balanced = False
+                    break
+        if not balanced or depth != 0:
+            continue
+        loop = d.get("loop", 1)
+        iterations = "infinite" if loop == "infinite" else max(1, min(int(loop or 1), 50))
+        out[name] = {
+            "body": kf,
+            "duration": max(100, min(int(d.get("duration") or 600), 4000)),
+            "easing": d.get("easing") or "cubic-bezier(.22,1,.36,1)",
+            "delay": max(0, min(int(d.get("delay") or 0), 5000)),
+            "iterations": iterations,
+        }
+    return out
+
+
+def _custom_anim_css(custom: dict) -> str:
+    """Rebuild @keyframes rules under their canonical names."""
+    import re as _re
+
+    rules: list[str] = []
+    for name, d in custom.items():
+        body_match = _re.search(r"@keyframes\s+[\w-]+\s*\{(.*)\}\s*$", d["body"], _re.DOTALL)
+        body = body_match.group(1) if body_match else d["body"]
+        rules.append(f"@keyframes {name} {{ {body} }}")
+    return "\n".join(rules)
+
+
+def _style_css(el: dict) -> str:
+    """Per-element style overrides, appended last so they win."""
+    style = el.get("style") or {}
+    if not isinstance(style, dict):
+        return ""
+    parts: list[str] = []
+    if style.get("color"):
+        parts.append(f"color:{_esc(style['color'])}")
+    if style.get("font_size"):
+        parts.append(f"font-size:{_esc(style['font_size'])}")
+    if style.get("font_weight"):
+        parts.append(f"font-weight:{_esc(style['font_weight'])}")
+    if style.get("align"):
+        parts.append(f"text-align:{_esc(style['align'])}")
+    if style.get("opacity") is not None:
+        try:
+            parts.append(f"opacity:{max(0.0, min(float(style['opacity']), 1.0))}")
+        except (TypeError, ValueError):
+            pass
+    if style.get("rotation"):
+        parts.append(f"transform:rotate({float(style['rotation']):g}deg)")
+    return "".join(p + ";" for p in parts)
+
+
+def _anim_attr(el: dict, custom: dict, index: int) -> tuple[str, str]:
+    """Returns (class_attr, inline_prefix) for the element's entrance."""
+    name = el.get("animation")
+    if name and name in custom:
+        d = custom[name]
+        total_delay = (d["delay"] + int(el.get("animation_delay") or 0)) / 1000
+        inline = (
+            f"animation:{name} {d['duration']}ms {d['easing']} {total_delay:.2f}s "
+            f"{d['iterations']} both;"
+        )
+        return "", inline
+    cls = _anim_cls(el)
+    delay = _anim_delay(index) if cls else ""
+    if el.get("animation_delay"):
+        delay += f"animation-delay:{int(el['animation_delay']) / 1000:.2f}s;"
+    return (f'class="{cls}"' if cls else ""), delay
+
+
 def _anim_css() -> str:
     """Generate all animation keyframes and base rules."""
     return """
@@ -114,6 +211,9 @@ def _esc(text: Any) -> str:
 def _group(slide: dict) -> dict[str, list[dict]]:
     by_type: dict[str, list[dict]] = {}
     for el in slide.get("elements", []):
+        # Free-positioned elements render in the overlay layer instead.
+        if el.get("x") is not None and el.get("y") is not None:
+            continue
         by_type.setdefault(el.get("type", ""), []).append(el)
     return by_type
 
@@ -125,21 +225,24 @@ def _card_style(t: ThemeTokens) -> str:
     )
 
 
-def _render_elements(els: list[dict], t: ThemeTokens, i0: int = 0) -> str:
+def _render_elements(els: list[dict], t: ThemeTokens, i0: int = 0, custom: dict | None = None) -> str:
     out: list[str] = []
+    custom = custom or {}
     for i, el in enumerate(els):
         etype = el.get("type")
-        cls = _anim_cls(el)
-        cls_attr = f'class="{cls}"' if cls else ""
-        delay = _anim_delay(i0 + i) if cls else ""
+        cls_attr, delay = _anim_attr(el, custom, i0 + i)
+        extra = _style_css(el)
+        inline = ""
+        if "animation:" in delay:
+            inline, delay = delay, ""
         if etype == "title":
             lvl = el.get("level", 1)
             size = {1: "clamp(32px,5vw,64px)", 2: "clamp(26px,3.6vw,44px)", 3: "clamp(20px,2.6vw,32px)"}.get(lvl, "clamp(26px,3.6vw,44px)")
-            out.append(f'<h1 {cls_attr} style="{delay}font-family:{t.font_heading};font-size:{size};font-weight:800;margin:0;line-height:1.1;letter-spacing:-0.02em;color:{t.text}">{_esc(el.get("text",""))}</h1>')
+            out.append(f'<h1 {cls_attr} style="{delay}{inline}{extra}font-family:{t.font_heading};font-size:{size};font-weight:800;margin:0;line-height:1.1;letter-spacing:-0.02em;color:{t.text}">{_esc(el.get("text",""))}</h1>')
         elif etype == "subtitle":
-            out.append(f'<p {cls_attr} style="{delay}font-family:{t.font_body};font-size:clamp(16px,2vw,24px);color:{t.text_muted};margin:8px 0 0">{_esc(el.get("text",""))}</p>')
+            out.append(f'<p {cls_attr} style="{delay}{inline}{extra}font-family:{t.font_body};font-size:clamp(16px,2vw,24px);color:{t.text_muted};margin:8px 0 0">{_esc(el.get("text",""))}</p>')
         elif etype == "paragraph":
-            out.append(f'<p {cls_attr} style="{delay}font-family:{t.font_body};font-size:clamp(15px,1.6vw,20px);line-height:1.6;color:{t.text_muted};max-width:60ch">{_esc(el.get("text",""))}</p>')
+            out.append(f'<p {cls_attr} style="{delay}{inline}{extra}font-family:{t.font_body};font-size:clamp(15px,1.6vw,20px);line-height:1.6;color:{t.text_muted};max-width:60ch">{_esc(el.get("text",""))}</p>')
         elif etype == "bullets":
             items = "".join(
                 f'<li style="display:flex;gap:12px;margin-bottom:12px;font-family:{t.font_body};font-size:clamp(15px,1.6vw,20px);color:{t.text}"><span style="width:8px;height:8px;border-radius:50%;background:{t.accent};margin-top:10px;flex-shrink:0"></span><span>{_esc(b)}</span></li>'
@@ -154,7 +257,12 @@ def _render_elements(els: list[dict], t: ThemeTokens, i0: int = 0) -> str:
             out.append(f'<pre {cls_attr} style="{delay}background:#0a0a14;border:1px solid {t.border};border-radius:{t.radius};padding:20px;overflow:auto;font-family:ui-monospace,monospace;color:#c8c8ff;font-size:14px"><code>{_esc(el.get("code",""))}</code></pre>')
         elif etype == "image":
             if el.get("src"):
-                out.append(f'<div {cls_attr} style="{delay}border-radius:{t.radius_lg};overflow:hidden;border:1px solid {t.border}"><img src="{_esc(el.get("src"))}" alt="{_esc(el.get("alt",""))}" style="width:100%;display:block"/></div>')
+                img_css = "width:100%;display:block;"
+                if el.get("flip"):
+                    img_css += "transform:scaleX(-1);"
+                if el.get("object_position"):
+                    img_css += f"object-position:{_esc(el['object_position'])};"
+                out.append(f'<div {cls_attr} style="{delay}border-radius:{t.radius_lg};overflow:hidden;border:1px solid {t.border}"><img src="{_esc(el.get("src"))}" alt="{_esc(el.get("alt",""))}" style="{img_css}"/></div>')
             else:
                 out.append(f'<div {cls_attr} style="{delay}border-radius:{t.radius_lg};border:1px solid {t.border};background:{t.surface2};min-height:160px;display:flex;align-items:center;justify-content:center;color:{t.text_muted};font-style:italic">{_esc(el.get("alt","Image"))}</div>')
         elif etype == "table":
@@ -166,6 +274,37 @@ def _render_elements(els: list[dict], t: ThemeTokens, i0: int = 0) -> str:
                 for r in rows
             )
             out.append(f'<div {cls_attr} style="{delay}overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-family:{t.font_body};font-size:15px">{("<thead><tr>"+thead+"</tr></thead>") if thead else ""}<tbody>{body}</tbody></table></div>')
+        elif etype == "video":
+            src = el.get("src") or ""
+            autoplay = " autoplay muted" if el.get("autoplay") else ""
+            poster_attr = ""
+            if el.get("poster"):
+                poster_attr = " poster=" + chr(34) + _esc(el["poster"]) + chr(34)
+            out.append(
+                f'<div {cls_attr} style="{delay}{extra}width:100%;border-radius:{t.radius_lg};overflow:hidden;border:1px solid {t.border}">'
+                f'<video src="{_esc(src)}" controls{poster_attr}{autoplay} '
+                f'style="width:100%;display:block"></video></div>'
+            )
+        elif etype == "audio":
+            out.append(
+                f'<div {cls_attr} style="{delay}{extra}width:100%">'
+                f'<audio src="{_esc(el.get("src") or "")}" controls style="width:100%"></audio></div>'
+            )
+        elif etype == "shape":
+            fill = el.get("fill") or t.accent
+            shape = el.get("shape", "rect")
+            if shape == "circle":
+                out.append(f'<div {cls_attr} style="{delay}{extra}width:100%;aspect-ratio:1;border-radius:50%;background:{_esc(fill)}"></div>')
+            elif shape == "line":
+                out.append(f'<div {cls_attr} style="{delay}{extra}width:100%;height:4px;background:{_esc(fill)};border-radius:2px"></div>')
+            elif shape == "arrow":
+                out.append(
+                    f'<svg {cls_attr} style="{delay}{extra}width:100%;height:100%;display:block" viewBox="0 0 100 40" preserveAspectRatio="none">'
+                    f'<line x1="0" y1="20" x2="82" y2="20" stroke="{_esc(fill)}" stroke-width="6" stroke-linecap="round"/>'
+                    f'<polygon points="80,6 100,20 80,34" fill="{_esc(fill)}"/></svg>'
+                )
+            else:
+                out.append(f'<div {cls_attr} style="{delay}{extra}width:100%;height:100%;min-height:40px;border-radius:{t.radius};background:{_esc(fill)}"></div>')
         elif etype == "icon":
             out.append(f'<span {cls_attr} style="{delay}font-size:28px" title="{_esc(el.get("label",""))}">✨</span>')
         elif etype == "diagram":
@@ -175,9 +314,9 @@ def _render_elements(els: list[dict], t: ThemeTokens, i0: int = 0) -> str:
     return "".join(out)
 
 
-def _render_complex(slide: dict, g: dict[str, list[dict]], t: ThemeTokens) -> str:
+def _render_complex(slide: dict, g: dict[str, list[dict]], t: ThemeTokens, custom: dict | None = None) -> str:
     out: list[str] = []
-    title_html = _render_elements(g.get("title", []), t)
+    title_html = _render_elements(g.get("title", []), t, custom=custom)
     if "cards" in g:
         items = (g["cards"][0].get("items") or []) if g.get("cards") else []
         cells = "".join(
@@ -223,6 +362,7 @@ def render_spec_html(spec: PresentationSpec, theme: ThemeTokens, animate: bool =
     theme_name = getattr(meta, "theme", None) or "modern"
     global_t = tokens_for(theme_name) if theme is None else theme
     slides_html: list[str] = []
+    custom = _custom_anim_map(meta)
     for slide in spec.slides:
         s = slide.model_dump() if hasattr(slide, "model_dump") else slide
         # Per-slide theme override
@@ -247,13 +387,27 @@ def render_spec_html(spec: PresentationSpec, theme: ThemeTokens, animate: bool =
         g = _group(s)
         # Title is rendered inside _render_complex (which prepends it). Only
         # subtitle + paragraph go here so the title isn't emitted twice.
-        body = _render_elements(g.get("subtitle", []) + g.get("paragraph", []), t)
-        body += _render_complex(s, g, t)
-        body += _render_elements([e for et in ("bullets", "quote", "code", "table", "image", "icon", "diagram") for e in g.get(et, [])], t, i0=10)
+        body = _render_elements(g.get("subtitle", []) + g.get("paragraph", []), t, custom=custom)
+        body += _render_complex(s, g, t, custom=custom)
+        body += _render_elements([e for et in ("bullets", "quote", "code", "table", "image", "icon", "diagram") for e in g.get(et, [])], t, i0=10, custom=custom)
+
+        # Free-positioned (Canvas-style) elements float over the layout.
+        free_els = [e for e in s.get("elements", []) if e.get("x") is not None and e.get("y") is not None]
+        if free_els:
+            overlay = "".join(
+                f'<div style="position:absolute;left:{float(e["x"]):g}%;top:{float(e["y"]):g}%;'
+                + (f'width:{float(e["w"]):g}%;' if e.get("w") is not None else "")
+                + '">'
+                + _render_elements([e], t, i0=10, custom=custom)
+                + "</div>"
+                for e in free_els
+            )
+            body += f'<div style="position:absolute;inset:0">{overlay}</div>'
+
         slides_html.append(
             f'<section class="slide print-break" data-slide '
             f'style="background:{bg};border-radius:{t.radius_lg};border:1px solid {t.border};'
-            f'padding:clamp(24px,4vw,64px);color:{t.text};box-sizing:border-box;overflow:hidden;'
+            f'padding:clamp(24px,4vw,64px);color:{t.text};box-sizing:border-box;overflow:hidden;position:relative;'
             f'display:flex;flex-direction:column;justify-content:flex-start">'
             f'{body}'
             f'</section>'
@@ -275,7 +429,7 @@ def render_spec_html(spec: PresentationSpec, theme: ThemeTokens, animate: bool =
         if link:
             font_links.add(link)
 
-    anim_css = _anim_css() if animate else ""
+    anim_css = (_anim_css() + "\n" + _custom_anim_css(custom)) if animate else ""
     font_links_html = "\n".join(sorted(font_links))
     title_escaped = _esc(getattr(meta, "title", "Slide AI Presentation"))
 

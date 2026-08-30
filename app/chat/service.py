@@ -29,10 +29,48 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+async def run_search_assets(settings, args: dict) -> str:
+    """Search the asset registry for the chat `search_assets` tool."""
+    import json as _json
+
+    from app.assets.provider import AssetKind, build_asset_registry
+
+    kind_raw = str(args.get("kind") or "image").lower()
+    try:
+        kind = AssetKind(kind_raw)
+    except ValueError:
+        kind = AssetKind.image
+    try:
+        limit = max(1, min(int(args.get("limit") or 8), 20))
+    except (TypeError, ValueError):
+        limit = 8
+    results = await build_asset_registry().search(str(args.get("query") or ""), kind, limit)
+    return _json.dumps(
+        [
+            {"url": r.url, "thumbnail": r.thumbnail, "attribution": r.attribution, "provider": r.provider}
+            for r in results
+        ],
+        ensure_ascii=False,
+    )
+
+
+def _format_diagnostics(diagnostics: list[dict]) -> str:
+    lines = [
+        "LIVE RENDER DIAGNOSTICS — measured on the user's screen on the slide "
+        "they are viewing right now. Fix these geometry problems FIRST and "
+        "prefer tools that keep the layout inside the slide bounds:"
+    ]
+    for d in diagnostics:
+        detail = d.get("detail") or ""
+        lines.append(f"- element {d['element_index']}: {d['problem']}" + (f" ({detail})" if detail else ""))
+    return chr(10).join(lines)
+
+
 class ChatService:
-    def __init__(self, client: AsyncClient, provider: ChatProvider) -> None:
+    def __init__(self, client: AsyncClient, provider: ChatProvider, settings=None) -> None:
         self._client = client
         self._provider = provider
+        self._settings = settings
 
     async def list_messages(
         self, presentation_id: Any, owner_id: Any,
@@ -53,6 +91,11 @@ class ChatService:
         user_text: str,
         current_slide_index: int = 0,
         max_history: int = 20,
+        *,
+        model: str | None = None,
+        screenshot: str | None = None,
+        diagnostics: list[dict] | None = None,
+        brand_context: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """Yields SSE event strings for the streaming response.
 
@@ -103,6 +146,42 @@ class ChatService:
         llm_messages = build_llm_messages(
             db_messages, spec, current_slide_index, max_history, role=role,
         )
+
+        # Measured render diagnostics ride in the system message — they give
+        # the model ground truth about geometry without needing vision.
+        if brand_context:
+            try:
+                llm_messages[0]["content"] += chr(10) + chr(10) + brand_context
+            except (IndexError, TypeError):
+                pass
+
+        if diagnostics:
+            try:
+                llm_messages[0]["content"] += (
+                    chr(10) + chr(10) + _format_diagnostics(diagnostics)
+                )
+            except (IndexError, TypeError):
+                pass
+
+        # Attach the slide screenshot to the newest user turn when the caller
+        # sent one AND the model was probed as vision-capable (the route only
+        # forwards it then). Multimodal content, never persisted to the DB.
+        if screenshot:
+            for _msg in reversed(llm_messages):
+                if _msg.get("role") == "user":
+                    _msg["content"] = [
+                        {
+                            "type": "text",
+                            "text": (
+                                f"{_msg.get('content', '')}\n\n"
+                                "(The attached image is a live screenshot of the "
+                                "slide the user is viewing. Ground your answer and "
+                                "your edits in what it actually shows.)"
+                            ),
+                        },
+                        {"type": "image_url", "image_url": {"url": screenshot}},
+                    ]
+                    break
         # Filter the tool menu by role. Viewers only see read tools.
         from app.chat.tools import tool_definitions_for_role
         allowed_tools = tool_definitions_for_role(role)
@@ -136,7 +215,7 @@ class ChatService:
 
                 try:
                     async for chunk in self._provider.stream_chat(
-                        llm_messages, tools=allowed_tools
+                        llm_messages, tools=allowed_tools, model=model
                     ):
                         if chunk.type == "token":
                             turn_text += chunk.delta
@@ -183,6 +262,19 @@ class ChatService:
                         continue
 
                     yield _sse("tool_call", {"name": tc.name, "arguments": tc.arguments})
+
+                    if tc.name == "search_assets":
+                        # Non-spec tool: talks to the asset registry directly.
+                        if self._settings is not None:
+                            summary = await run_search_assets(self._settings, tc.arguments)
+                        else:
+                            summary = '{"error": "asset search unavailable"}'
+                        tool_result = {"name": tc.name, "success": True, "summary": summary[:800]}
+                        turn_results.append(tool_result)
+                        all_tool_results.append(tool_result)
+                        all_tool_calls.append(tc)
+                        yield _sse("tool_result", tool_result)
+                        continue
 
                     result: ToolResult = await dispatch_tool(tc.name, tc.arguments, spec)
                     spec = result.spec

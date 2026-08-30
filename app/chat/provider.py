@@ -43,6 +43,7 @@ class ChatProvider(ABC):
         messages: list[dict],
         *,
         tools: list[dict] | None = None,
+        model: str | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         ...
 
@@ -61,13 +62,14 @@ class OnlineChatProvider(ChatProvider):
         messages: list[dict],
         *,
         tools: list[dict] | None = None,
+        model: str | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         # Caller may filter the tool menu (e.g. read-only tools for viewers).
         # Default to the full set for backwards compatibility.
         active_tools = tools if tools is not None else TOOL_DEFINITIONS
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             payload: dict[str, Any] = {
-                "model": self._model,
+                "model": model or self._model,
                 "messages": messages,
                 "tools": active_tools,
                 "tool_choice": "auto",
@@ -197,6 +199,7 @@ class OfflineChatProvider(ChatProvider):
         messages: list[dict],
         *,
         tools: list[dict] | None = None,
+        model: str | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         # Get the last user message
         user_msg = ""

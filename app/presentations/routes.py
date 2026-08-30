@@ -18,6 +18,7 @@ translate domain errors into HTTP responses via the global handlers.
 """
 from __future__ import annotations
 
+import json
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
@@ -28,7 +29,7 @@ from supabase import AsyncClient
 import app.db as db
 from app.api.deps import extract_token, owner_id, supabase
 from app.core.config import Settings
-from app.core.exceptions import ForbiddenError, NotFoundError
+from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
 from app.generation.service import GenerationService
 from app.generation.spec import PresentationSpec
 from app.export.strategy import ExportFormat
@@ -151,12 +152,158 @@ async def generate_presentation(
     Creates a draft, asks the provider (exposed only as "Slide AI") for
     slides, persists them, and returns the ready presentation.
     """
+    from app.core.brand import get_brand_context
     from app.core.ratelimit import generation_limiter
 
     generation_limiter.check(str(owner_id))
 
+    req = req.model_copy(update={"brand_context": await get_brand_context(supabase, owner_id)})
     row = await service.generate(owner_id, request=req)
     return _to_response(row)
+
+
+# ── search & import (declared BEFORE /{presentation_id} so /search is not
+#    captured by the dynamic UUID route) ──────────────────────────────────────
+
+
+@router.get("/search", response_model=PresentationListResponse)
+async def search_presentations(
+    q: str,
+    owner_id: UUID = Depends(_owner_id),
+    supabase: AsyncClient = Depends(_supabase),
+) -> PresentationListResponse:
+    """Full-deck search: matches title, description AND slide content."""
+    query = (q or "").strip().lower()
+    if not query:
+        return PresentationListResponse(items=[], total=0)
+    rows = await db.list_presentations(supabase, owner_id, limit=200, offset=0)
+    hits = []
+    for row in rows:
+        haystack = " ".join([
+            str(row.get("title") or ""),
+            str(row.get("description") or ""),
+            json.dumps(row.get("spec") or {}, ensure_ascii=False, default=str),
+        ]).lower()
+        if query in haystack:
+            hits.append(row)
+    from app.presentations.service import _to_entity
+
+    items = [PresentationResponse.from_entity(_to_entity(r)) for r in hits]
+    return PresentationListResponse(items=items, total=len(items))
+
+
+class ImportRequest(BaseModel):
+    source: str = Field(pattern="^(markdown|url)$")
+    content: str | None = Field(default=None, max_length=200000)
+    url: str | None = Field(default=None, max_length=2000)
+    slide_count: int | None = Field(default=None, ge=1, le=30)
+    language: str = Field(default="English", max_length=40)
+    theme: str | None = Field(default=None, max_length=40)
+    model: str | None = Field(default=None, max_length=80)
+
+
+_PRIVATE_HOST_RE = None  # compiled lazily in _fetch_url_text
+
+
+def _is_private_host(host: str) -> bool:
+    import re as _re
+
+    return bool(
+        _re.match(
+            r"^(localhost|127\.|10\.|192\.168\.|169\.254\.|0\.|\[::1\]|172\.(1[6-9]|2\d|3[01])\.|.*\.local$)",
+            (host or "").lower(),
+        )
+    )
+
+
+async def _fetch_url_text(url: str) -> str:
+    """Fetch a web page and extract readable text (SSRF-guarded)."""
+    from urllib.parse import urlparse
+
+    import httpx
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValidationError("Only http(s) URLs are supported")
+    if _is_private_host(parsed.hostname or ""):
+        raise ValidationError("This URL is not reachable")
+
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        resp = await client.get(url)
+    if resp.status_code != 200:
+        raise ValidationError(f"The page returned HTTP {resp.status_code}")
+    if len(resp.content) > 800_000:
+        raise ValidationError("Page too large to import (max 800 KB)")
+    content_type = resp.headers.get("content-type", "")
+    text = resp.text
+    if "html" in content_type or text.lstrip().startswith("<"):
+        import html as _html
+        import re as _re
+
+        text = _re.sub(r"(?is)<(script|style|noscript|svg)[^>]*>.*?</\1>", " ", text)
+        text = _re.sub(r"(?s)<[^>]+>", " ", text)
+        text = _html.unescape(text)
+    text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
+    return text[:20000]
+
+
+@router.post("/import", response_model=PresentationResponse, status_code=201)
+async def import_presentation(
+    req: ImportRequest,
+    request: Request,
+    owner_id: UUID = Depends(_owner_id),
+    supabase: AsyncClient = Depends(_supabase),
+    service: GenerationService = Depends(_generation_service),
+) -> PresentationResponse:
+    """Create a deck from imported material (markdown text or a web page URL).
+
+    The AI structures the deck around the source material's facts instead of
+    inventing content.
+    """
+    from app.core.model_catalog import resolve_model
+    from app.core.ratelimit import generation_limiter
+
+    generation_limiter.check(str(owner_id))
+
+    settings: Settings = request.app.state.settings
+    model = await resolve_model(settings, req.model)
+
+    if req.source == "url":
+        if not req.url:
+            raise ValidationError("A URL is required when source is 'url'")
+        source_content = await _fetch_url_text(req.url)
+        prompt = "Create a presentation faithful to the imported web page below"
+    else:
+        content = (req.content or "").strip()
+        if not content:
+            raise ValidationError("Markdown content is required when source is 'markdown'")
+        source_content = content[:20000]
+        prompt = "Create a presentation based on the imported markdown below"
+
+    slide_count = req.slide_count
+    if slide_count is None:
+        words = max(1, len(source_content.split()))
+        slide_count = max(3, min(12, words // 120 + 1))
+
+    from app.generation.schemas import GenerationRequest as _GenReq
+
+    gen_request = _GenReq(
+        prompt=prompt,
+        slide_count=slide_count,
+        language=req.language,
+        theme=req.theme,
+        model=model,
+        source_content=source_content,
+    )
+    from app.core.brand import get_brand_context
+
+    gen_request = gen_request.model_copy(
+        update={"brand_context": await get_brand_context(supabase, owner_id)}
+    )
+    saved = await service.generate(owner_id, request=gen_request)
+    from app.presentations.service import _to_entity
+
+    return PresentationResponse.from_entity(_to_entity(saved))
 
 
 @router.get("/{presentation_id}", response_model=PresentationResponse)
@@ -189,6 +336,7 @@ async def get_presentation_spec(
 @router.get("/{presentation_id}/export")
 async def export_presentation(
     presentation_id: UUID,
+    request: Request,
     format: ExportFormat = ExportFormat.HTML,
     owner_id: UUID = Depends(_owner_id),
     supabase: AsyncClient = Depends(_supabase),
@@ -204,6 +352,15 @@ async def export_presentation(
     if not spec_raw:
         raise NotFoundError("Presentation specification not found")
     spec = PresentationSpec.model_validate(spec_raw)
+    # Images referenced by file_id get FRESH signed URLs for the export.
+    try:
+        from app.files.service import resolve_spec_image_urls
+
+        spec = await resolve_spec_image_urls(
+            supabase, request.app.state.storage, spec, owner_id
+        )
+    except Exception:
+        pass  # export proceeds with whatever srcs exist
     exported = await ExportService().export(spec, fmt=format, theme_hint=spec.meta.theme if spec.meta else None)
     return Response(
         content=exported.data,
@@ -216,6 +373,7 @@ async def export_presentation(
 async def update_presentation_spec(
     presentation_id: UUID,
     spec: PresentationSpec,
+    expected_updated_at: str | None = None,
     owner_id: UUID = Depends(_owner_id),
     supabase: AsyncClient = Depends(_supabase),
 ) -> PresentationSpec:
@@ -228,20 +386,55 @@ async def update_presentation_spec(
         from fastapi import HTTPException
         raise HTTPException(status_code=422, detail="slides required")
     row = await _require_presentation(supabase, presentation_id, owner_id, write=True)
+
+    # Optimistic locking: reject the write when the deck changed since the
+    # caller loaded it, instead of silently overwriting concurrent edits.
+    if expected_updated_at and row.get("updated_at"):
+        from datetime import datetime as _dt
+        from datetime import timezone as _timezone
+
+        def _parse_ts(value):
+            parsed = _dt.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=_timezone.utc)
+            return parsed
+
+        try:
+            incoming = _parse_ts(expected_updated_at)
+            current = _parse_ts(row["updated_at"])
+        except (ValueError, TypeError):
+            pass
+        else:
+            if incoming.replace(microsecond=0) != current.replace(microsecond=0):
+                from app.core.exceptions import ConflictError
+
+                raise ConflictError(
+                    "This presentation was modified elsewhere after you loaded it. "
+                    "Reload to get the latest version before saving."
+                )
+
     old_spec = PresentationSpec.model_validate(row["spec"])
     from app.presentations.versioning import snapshot_if_changed
     await snapshot_if_changed(supabase, presentation_id, owner_id, old_spec, note="manual edit")
-    await db.update_presentation(
+    saved = await db.update_presentation(
         supabase, presentation_id,
         spec=spec.model_dump(),
         slide_count=len(spec.slides),
     )
-    return spec
+    # Echo the fresh updated_at so clients can keep the optimistic lock current.
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(
+        content=spec.model_dump(mode="json"),
+        headers={"X-Updated-At": str((saved or {}).get("updated_at") or "")},
+    )
 
 
 class SpecEditRequest(BaseModel):
     instruction: str
     target_indexes: list[int] | None = Field(default=None)
+    # Model the caller picked (Quick AI edit modal). None → backend default.
+    model: str | None = Field(default=None, max_length=80)
 
 
 class SpecEditResponse(BaseModel):
@@ -271,11 +464,19 @@ async def ai_edit_presentation(
     settings: Settings = request.app.state.settings
     provider = build_spec_edit_provider(settings)
 
+    from app.core.model_catalog import resolve_model
+
+    model = await resolve_model(settings, req.model)
+
     row = await _require_presentation(supabase, presentation_id, owner_id, write=True)
     current_spec = PresentationSpec.model_validate(row["spec"])
 
+    from app.core.brand import get_brand_context
+
+    brand_context = await get_brand_context(supabase, owner_id)
     result: SpecEditResult = await provider.edit_spec(
-        current_spec, req.instruction, req.target_indexes
+        current_spec, req.instruction, req.target_indexes, model=model,
+        brand_context=brand_context,
     )
 
     from app.presentations.versioning import snapshot_if_changed

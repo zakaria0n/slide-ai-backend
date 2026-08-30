@@ -15,7 +15,9 @@ spec generator is a thin strategy over it.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import random
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -30,6 +32,84 @@ from app.templates.library import get_template
 
 DISPLAYED_PROVIDER = "Slide AI"
 _MAX_RETRIES = 2
+# If the requested/default model repeatedly fails, retry the whole generation
+# once with the first of these that exists in the provider catalog.
+_FALLBACK_MODELS = ["hy3-free", "nemotron-3.5-lightning-free", "deepseek-v4-flash-free"]
+
+_GENERIC_TITLE_RE = None  # compiled lazily
+
+
+def _spec_quality_feedback(spec) -> list[str]:
+    """Deterministic quality checks — fed back to the model on retries.
+
+    These are structural issues we can measure without taste: under-filled
+    layouts and placeholder-ish titles. Never blocks a deck; only shapes
+    the retry prompt.
+    """
+    issues: list[str] = []
+    generic_titles = {"untitled", "overview", "introduction", "conclusion", "content", "agenda"}
+    for i, slide in enumerate(spec.slides):
+        layout = slide.layout
+        counts: dict[str, int] = {}
+        for el in slide.elements:
+            counts[el.type] = counts.get(el.type, 0) + 1
+        if layout == "statistics" and counts.get("statistics", 0) and _items_len(slide, "statistics") < 3:
+            issues.append(f"slide {i + 1} (statistics): fewer than 3 stat items — add at least 3")
+        if layout == "cards" and counts.get("cards", 0) and _items_len(slide, "cards") < 3:
+            issues.append(f"slide {i + 1} (cards): fewer than 3 cards — add at least 3")
+        if counts.get("bullets", 0) and _bullets_count(slide) < 3:
+            issues.append(f"slide {i + 1}: fewer than 3 bullet points — expand the list")
+        if layout == "timeline" and counts.get("timeline", 0) and _items_len(slide, "timeline") < 4:
+            issues.append(f"slide {i + 1} (timeline): fewer than 4 entries")
+        if layout == "comparison" and counts.get("comparison", 0) and _comparison_min(slide) < 3:
+            issues.append(f"slide {i + 1} (comparison): fewer than 3 points on a side")
+        if layout == "table" and counts.get("table", 0) and _table_rows(slide) < 3:
+            issues.append(f"slide {i + 1} (table): fewer than 3 data rows")
+        for el in slide.elements:
+            text = getattr(el, "text", None)
+            if getattr(el, "type", "") == "title" and text and str(text).strip().lower() in generic_titles:
+                issues.append(f'slide {i + 1}: title "{text}" is generic — write a real expressive heading')
+    return issues[:12]
+
+
+def _items_len(slide, el_type: str) -> int:
+    for el in slide.elements:
+        if getattr(el, "type", "") == el_type:
+            return len(getattr(el, "items", []) or [])
+    return 0
+
+
+def _bullets_count(slide) -> int:
+    total = 0
+    for el in slide.elements:
+        if getattr(el, "type", "") == "bullets":
+            total += len(getattr(el, "items", []) or [])
+    return total
+
+
+def _comparison_min(slide) -> int:
+    for el in slide.elements:
+        if getattr(el, "type", "") == "comparison":
+            left = len(getattr(el, "left").points or []) if getattr(el, "left", None) else 0
+            right = len(getattr(el, "right").points or []) if getattr(el, "right", None) else 0
+            return min(left, right)
+    return 0
+
+
+def _table_rows(slide) -> int:
+    for el in slide.elements:
+        if getattr(el, "type", "") == "table":
+            return len(getattr(el, "rows", []) or [])
+    return 0
+# Backoff between provider retries (seconds) — free-tier 503s usually clear fast.
+_RETRY_BACKOFF_S = [3.0, 8.0]
+# Upstream statuses worth retrying (capacity / rate limiting).
+_TRANSIENT_STATUS = {429, 500, 502, 503, 504}
+
+
+def _creative_direction() -> str:
+    """Random creative directive appended to each generation request."""
+    return random.choice(OnlineSpecProvider._DIRECTIONS)
 
 
 class SpecProvider(ABC):
@@ -151,10 +231,11 @@ DESIGN RULES — follow these strictly:
    - For education themes: clear explanations, structured learning.
    - For minimal themes: less text, more white space, fewer elements per slide.
 
-9. CUSTOM ANIMATIONS (your creative toolset — use it):
-   - Define custom keyframe animations in meta.customAnimations and attach them
-     to elements via "animation": "<anim_name>". This is YOUR tool for making
-     decks feel alive — use it on hero titles, key statistics, and CTA slides.
+9. CUSTOM ANIMATIONS (EXPECTED in every deck):
+   - EVERY deck you produce defines 1–2 custom keyframe animations in
+     meta.customAnimations and applies them via "animation": "<anim_name>" on
+     the hero title, key statistics titles, and the CTA/conclusion title.
+     A deck with zero custom animations is an incomplete deck.
    - You may animate ANY CSS property. transform/opacity/filter are the
      smoothest (GPU-accelerated), but box-shadow glows, color shimmers,
      letter-spacing reveals and background-position sweeps are all welcome.
@@ -170,8 +251,8 @@ DESIGN RULES — follow these strictly:
      a premium expo-out.
    - Start hidden at 0% (opacity 0 and/or off-transform/scale) and settle fully
      visible and at-rest at 100% so text stays crisp after the entrance.
-   - Be expressive but focused: 1–3 signature animations per deck beats one per
-     element. Give each deck its own motion identity matching its tone.
+   - Invent names that fit THIS deck's identity ("riseGlow", "steamRise",
+     "pulseGold") — don't reuse the same two names in every deck.
 
 10. CUSTOM-CODED SLIDES (layout="custom" — full creative freedom):
    - For 1–2 SHOWPIECE slides per deck (hero, product reveal, data showcase)
@@ -200,14 +281,18 @@ FEW-SHOT EXAMPLES — the level of specificity and density expected:
 
 Example A — topic "gamification in education" (3 slides):
 {
-  "meta": {"title": "Gamification in Education", "theme": "education", "background": null, "language": "English", "tone": "Professional"},
+  "meta": {"title": "Gamification in Education", "theme": "education", "background": null, "language": "English", "tone": "Professional",
+    "customAnimations": [
+      {"name": "chalkRise", "keyframes": "@keyframes chalkRise { 0% { opacity: 0; transform: translateY(28px) } 100% { opacity: 1; transform: translateY(0) } }", "duration": 600, "easing": "cubic-bezier(0.16, 1, 0.3, 1)"},
+      {"name": "xpPop", "keyframes": "@keyframes xpPop { 0% { opacity: 0; transform: scale(0.7) } 70% { opacity: 1; transform: scale(1.05) } 100% { opacity: 1; transform: scale(1) } }", "duration": 450, "easing": "ease-out"}
+    ]},
   "slides": [
     {"layout": "hero", "elements": [
-      {"type": "title", "text": "Classrooms, Reimagined as Games", "level": 1},
+      {"type": "title", "text": "Classrooms, Reimagined as Games", "level": 1, "animation": "chalkRise"},
       {"type": "subtitle", "text": "How XP, badges, and leaderboards are reshaping K-12 and higher-ed engagement"}
     ]},
     {"layout": "statistics", "elements": [
-      {"type": "title", "text": "The Engagement Dividend", "level": 2},
+      {"type": "title", "text": "The Engagement Dividend", "level": 2, "animation": "xpPop"},
       {"type": "statistics", "items": [
         {"value": "73%", "label": "Teachers using Kahoot report higher homework completion"},
         {"value": "2.3×", "label": "Daily active sessions on Duolingo vs traditional apps"},
@@ -216,7 +301,7 @@ Example A — topic "gamification in education" (3 slides):
       ]}
     ]},
     {"layout": "comparison", "elements": [
-      {"type": "title", "text": "Traditional vs Gameful Classrooms", "level": 2},
+      {"type": "title", "text": "Traditional vs Gameful Classrooms", "level": 2, "animation": "chalkRise"},
       {"type": "comparison", "left": {
         "title": "Traditional",
         "points": ["Single grade per quarter", "Failure = permanent", "Same pace for everyone", "Extrinsic (fear of F)"]
@@ -230,10 +315,13 @@ Example A — topic "gamification in education" (3 slides):
 
 Example B — topic "quarterly finance report" (3 slides):
 {
-  "meta": {"title": "Q3 2024 Financial Review", "theme": "finance", "background": null, "language": "English", "tone": "Professional"},
+  "meta": {"title": "Q3 2024 Financial Review", "theme": "finance", "background": null, "language": "English", "tone": "Professional",
+    "customAnimations": [
+      {"name": "ledgerIn", "keyframes": "@keyframes ledgerIn { 0% { opacity: 0; transform: translateY(20px) } 100% { opacity: 1; transform: translateY(0) } }", "duration": 550, "easing": "cubic-bezier(0.16, 1, 0.3, 1)"}
+    ]},
   "slides": [
     {"layout": "hero", "elements": [
-      {"type": "title", "text": "Q3 2024: Margin-Driven Growth", "level": 1},
+      {"type": "title", "text": "Q3 2024: Margin-Driven Growth", "level": 1, "animation": "ledgerIn"},
       {"type": "subtitle", "text": "Revenue +18% YoY, gross margin 64.2%, EBITDA $12.4M"}
     ]},
     {"layout": "table", "elements": [
@@ -260,10 +348,14 @@ Example B — topic "quarterly finance report" (3 slides):
 
 Example C — topic "startup pitch for a coffee brand" (3 slides):
 {
-  "meta": {"title": "Verde Coffee Roasters", "theme": "startup", "background": null, "language": "English", "tone": "Bold"},
+  "meta": {"title": "Verde Coffee Roasters", "theme": "startup", "background": null, "language": "English", "tone": "Bold",
+    "customAnimations": [
+      {"name": "steamRise", "keyframes": "@keyframes steamRise { 0% { opacity: 0; transform: translateY(18px) scale(0.96); filter: blur(4px) } 100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0) } }", "duration": 650, "easing": "cubic-bezier(0.16, 1, 0.3, 1)"},
+      {"name": "roastGlow", "keyframes": "@keyframes roastGlow { 0% { box-shadow: 0 0 0 rgba(230,126,34,0) } 100% { box-shadow: 0 0 32px rgba(230,126,34,.45) } }", "duration": 900, "easing": "ease-in-out"}
+    ]},
   "slides": [
     {"layout": "hero", "elements": [
-      {"type": "title", "text": "Specialty Coffee, Direct to Office", "level": 1},
+      {"type": "title", "text": "Specialty Coffee, Direct to Office", "level": 1, "animation": "steamRise"},
       {"type": "subtitle", "text": "Single-origin beans, IoT-roasted, delivered to 5,000+ workplaces in 12 cities"}
     ]},
     {"layout": "statistics", "elements": [
@@ -359,19 +451,64 @@ def _parse_spec(raw: str) -> PresentationSpec:
 class OnlineSpecProvider(SpecProvider):
     """Real provider client that returns a structured specification."""
 
+    # Motion/structure personalities rotated per generation so repeated topics
+    # produce visually distinct decks instead of converging on one template.
+    _DIRECTIONS = [
+        "Open with a dramatic custom-coded hero (layout='custom'): oversized kinetic typography, staggered reveals, a live counter or animated gradient backdrop.",
+        "Lead with momentum: timeline/process structure, custom 'riseGlow'-style entrance on the hero title, stats that count up.",
+        "Go editorial: comparison and quote layouts front and center, slow blur-focus entrances, generous whitespace.",
+        "Data-first: statistics/chart layouts dominate, animate numbers popping in with overshoot (bounce bezier), connect figures into one narrative.",
+        "Cinematic minimal: few elements per slide, long smooth drift+fade entrances, one bold statement per slide.",
+        "High-energy pitch: cards with playful bounce-in (y-overshoot bezier), a custom-coded showpiece slide mid-deck, punchy 3-4 word titles.",
+    ]
+
     def __init__(self, settings: Settings) -> None:
+        self._settings = settings
         self._base_url = settings.ai_provider_base_url.rstrip("/")
         self._api_key = settings.ai_provider_api_key
         self._model = settings.ai_provider_default_model
         self._timeout = settings.ai_request_timeout_seconds
 
     async def generate_spec(self, request: GenerationRequest) -> PresentationSpec:
+        # Caller-selected model (settings page / dashboard), validated against
+        # the provider catalog; falls back to the configured default.
+        from app.core.model_catalog import list_model_ids, resolve_model
+
+        model = await resolve_model(self._settings, request.model)
+
+        # Fallback chain: if the primary model cannot produce a valid spec,
+        # try one alternate from the catalog before giving up.
+        candidates = [model]
+        try:
+            ids = set(await list_model_ids(self._settings))
+        except Exception:  # pragma: no cover - defensive
+            ids = set()
+        for candidate in _FALLBACK_MODELS:
+            if candidate != model and (not ids or candidate in ids):
+                candidates.append(candidate)
+                break
+
+        last_error: Exception | None = None
+        for candidate in candidates:
+            try:
+                return await self._generate_with_model(candidate, request)
+            except ProviderError as exc:
+                last_error = exc
+        raise last_error or ProviderError(
+            f"{DISPLAYED_PROVIDER} could not produce a valid specification"
+        )
+
+    async def _generate_with_model(self, model: str, request: GenerationRequest) -> PresentationSpec:
+        # Per-generation creative direction — rotates so two runs on the SAME
+        # topic diverge in structure and motion instead of converging.
+        direction = _creative_direction()
         user_prompt = (
             f"Create a {request.slide_count}-slide presentation.\n"
             f"Topic: {request.prompt}\n"
             f"Tone: {request.tone}\n"
             f"Language: {request.language}"
             + (f"\nTheme: {request.theme} — adapt content style to this theme." if request.theme else "")
+            + f"\n\nCREATIVE DIRECTION for THIS deck (follow it): {direction}"
             + "\n\n"
             f"CRITICAL: You MUST generate exactly {request.slide_count} slides. No more, no fewer.\n"
             "CRITICAL: Every statistic, name, and example MUST be specific to the topic above. "
@@ -384,12 +521,23 @@ class OnlineSpecProvider(SpecProvider):
             "Example: prompt 'Create a presentation about AI in healthcare' → title 'AI in Healthcare'.\n"
             "CRITICAL: Respect the minimum elements per layout (statistics ≥ 3 items, cards ≥ 3, "
             "bullets ≥ 4, comparison ≥ 3 per side, timeline ≥ 4, table ≥ 3 rows).\n"
-            "Give every slide a real, expressive title. Vary layouts. Keep text scannable."
+            "Give every slide a real, expressive title. Vary layouts. Keep text scannable.\n"
+            f"CRITICAL: Write ALL slide content in {request.language}."
         )
+        if request.source_content:
+            material = request.source_content[:6000]
+            user_prompt += (
+                "\n\nSOURCE MATERIAL — base the deck's facts, structure and wording on "
+                "the material below (stay faithful to it, do not invent contradicting data):\n"
+                f"<source>\n{material}\n</source>"
+            )
         last_error: Exception | None = None
+        quality_issues: list[str] = []
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             for attempt in range(_MAX_RETRIES + 1):
                 system = _SYSTEM_PROMPT
+                if request.theme == "custom":
+                    system = _CUSTOM_MODE_PROMPT + "\n\n" + system
                 template = get_template(request.template_name)
                 if template is not None:
                     layouts_hint = ", ".join(s.layout for s in template.slides)
@@ -407,14 +555,19 @@ class OnlineSpecProvider(SpecProvider):
                         "\nYour previous output was invalid or too generic. "
                         "Fix the JSON AND make every element topic-specific with real numbers."
                     )
+                if quality_issues:
+                    system = system + (
+                        "\nQUALITY ISSUES measured in your previous output — fix ALL of them:\n- "
+                        + "\n- ".join(quality_issues)
+                    )
                 payload = {
-                    "model": self._model,
+                    "model": model,
                     "messages": [
                         {"role": "system", "content": system},
                         {"role": "user", "content": user_prompt},
                     ],
                     "response_format": {"type": "json_object"},
-                    "temperature": 0.6,
+                    "temperature": 0.75,
                 }
                 try:
                     resp = await client.post(
@@ -426,9 +579,18 @@ class OnlineSpecProvider(SpecProvider):
                         json=payload,
                     )
                 except httpx.HTTPError as exc:
+                    # Network/timeout failure — retry with backoff; free-tier
+                    # endpoints hiccup often.
+                    if attempt < _MAX_RETRIES:
+                        await asyncio.sleep(_RETRY_BACKOFF_S[min(attempt, len(_RETRY_BACKOFF_S) - 1)])
+                        continue
                     raise ProviderError(
                         f"{DISPLAYED_PROVIDER} is temporarily unavailable"
                     ) from exc
+                if resp.status_code in _TRANSIENT_STATUS and attempt < _MAX_RETRIES:
+                    # Upstream capacity errors (503/502/429) — wait and retry.
+                    await asyncio.sleep(_RETRY_BACKOFF_S[min(attempt, len(_RETRY_BACKOFF_S) - 1)])
+                    continue
                 if resp.status_code != 200:
                     raise ProviderError(f"{DISPLAYED_PROVIDER} returned an error")
                 try:
@@ -439,11 +601,20 @@ class OnlineSpecProvider(SpecProvider):
                         "The generation response was malformed"
                     ) from exc
                 try:
-                    return _parse_spec(content)
+                    parsed = _parse_spec(content)
                 except ProviderError as exc:
                     last_error = exc
                     # Auto-retry on schema failure.
                     continue
+                try:
+                    issues = _spec_quality_feedback(parsed)
+                except Exception:  # pragma: no cover - checks must never fail a deck
+                    issues = []
+                if issues and attempt < _MAX_RETRIES:
+                    quality_issues = issues
+                    last_error = ProviderError("quality: " + "; ".join(issues[:3]))
+                    continue
+                return parsed
         raise ProviderError(
             f"{DISPLAYED_PROVIDER} could not produce a valid specification"
         ) from last_error
@@ -743,6 +914,23 @@ def build_spec_provider(settings: Settings) -> SpecProvider:
         return OfflineSpecProvider()
     return OnlineSpecProvider(settings)
 
+
+_CUSTOM_MODE_PROMPT = """
+CUSTOM CREATIVE MODE (theme = 'custom') - FULL CREATIVE FREEDOM:
+The user picked the 'custom' theme: you are NOT limited to the standard
+layout catalog or the preset animation names.
+- Author MOST slides as layout="custom" with your own self-contained
+  HTML/CSS/JS (rule 10): invent any layout, composition, typography, or
+  artwork (canvas, SVG, particles, WebGL). The structured element layouts
+  are optional tools, not obligations.
+- Author your OWN keyframe animations (meta.customAnimations) for every
+  motion; you may ignore the built-in animation names entirely. Any CSS
+  property is allowed.
+- The ONLY hard requirements: EXACTLY the requested number of slides,
+  content deeply specific to the topic, and every custom slide ends fully
+  visible and settled on 'slide:activate'.
+- Use structured layouts only where they genuinely serve clarity.
+"""
 
 _SYSTEM_PROMPT = (
     "You are Slide AI, a world-class presentation designer. "

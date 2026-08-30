@@ -101,6 +101,38 @@ async def me(
     return UserResponse.from_entity(user)
 
 
+@router.post("/mcp-token")
+async def create_mcp_token(
+    request: Request,
+    token: str = Depends(extract_token),
+) -> dict:
+    """Mint a personal access token for MCP clients (72h validity).
+
+    Long-lived on purpose: AI coding tools configured with the session's
+    1h login token would silently break at every reconnection. Requires an
+    authenticated session; the minted token carries the same identity.
+    """
+    verifier = getattr(request.app.state, "jwt_verifier", None)
+    if verifier is None:
+        from app.auth.jwt_verifier import JWTVerifier
+
+        settings: Settings = _app_settings(request)
+        verifier = JWTVerifier(settings.supabase_jwt_secret or "dev-insecure-secret")
+    user = verifier.to_user(token)
+    expires_in = 72 * 3600
+    full_name = (user.metadata or {}).get("full_name")
+    access_token = verifier.mint_access_token(
+        user.id, user.email, expires_in_seconds=expires_in,
+        full_name=str(full_name) if full_name else None,
+    )
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "expires_in": expires_in,
+        "purpose": "mcp",
+    }
+
+
 @router.patch("/me", response_model=UserResponse)
 async def update_me(
     req: UpdateProfileRequest,

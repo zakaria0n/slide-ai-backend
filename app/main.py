@@ -19,6 +19,9 @@ from app.templates.routes import router as templates_router
 from app.sharing.routes import router as sharing_router
 from app.workspaces.routes import router as workspaces_router
 from app.chat.routes import router as chat_router
+from app.api.routes.models import router as models_router
+from app.api.routes.brand_kit import router as brand_kit_router
+from app.mcp.routes import router as mcp_router
 
 
 logger = get_logger("main")
@@ -149,6 +152,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(sharing_router, prefix=v1)
     app.include_router(workspaces_router, prefix=v1)
     app.include_router(chat_router, prefix=v1)
+    app.include_router(models_router, prefix=v1)
+    app.include_router(brand_kit_router, prefix=v1)
+    app.include_router(mcp_router, prefix=v1)
 
     @app.get("/", tags=["meta"])
     async def root() -> dict[str, str]:

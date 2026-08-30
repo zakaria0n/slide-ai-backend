@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from supabase import AsyncClient
 
 import app.db as db
@@ -47,6 +47,8 @@ class ShareResponse(BaseModel):
     embed_allowed: bool
     expires_at: str | None = None
     created_at: str
+    view_count: int = 0
+    comments: list[dict] = []
 
 
 class ShareListResponse(BaseModel):
@@ -56,6 +58,12 @@ class ShareListResponse(BaseModel):
 class SharedSpecResponse(BaseModel):
     spec: PresentationSpec
     title: str
+    comments: list[dict] = []
+
+
+class ShareCommentRequest(BaseModel):
+    author_name: str | None = Field(default=None, max_length=40)
+    content: str = Field(min_length=1, max_length=500)
 
 
 # --- owner-scoped routes ---
@@ -127,7 +135,7 @@ async def create_share(
 
 
 @router.get("/presentations/{presentation_id}/shares", response_model=ShareListResponse)
-async def list_shares(
+async def list_shares_with_stats(
     presentation_id: UUID,
     owner_id: UUID = Depends(_get_owner_id),
     supabase: AsyncClient = Depends(_supabase),
@@ -136,20 +144,25 @@ async def list_shares(
     await _require_presentation(supabase, presentation_id, owner_id)
     shares = await db.list_shares(supabase, presentation_id)
 
-    return ShareListResponse(
-        shares=[
-            ShareResponse(
-                id=str(s["id"]),
-                token=s["token"],
-                visibility=s["visibility"],
-                permission=s["permission"],
-                embed_allowed=s["embed_allowed"],
-                expires_at=s.get("expires_at"),
-                created_at=s["created_at"],
-            )
-            for s in shares
-        ]
-    )
+    items = []
+    for s_row in shares:
+        try:
+            comments = await db.list_share_comments(supabase, s_row["token"])
+        except Exception:
+            comments = []
+        items.append(ShareResponse(
+            id=str(s_row["id"]),
+            token=s_row["token"],
+            visibility=s_row["visibility"],
+            permission=s_row["permission"],
+            embed_allowed=s_row["embed_allowed"],
+            expires_at=s_row.get("expires_at"),
+            created_at=s_row["created_at"],
+            view_count=int(s_row.get("view_count") or 0),
+            comments=comments,
+        ))
+
+    return ShareListResponse(shares=items)
 
 
 @router.delete("/shares/{token}", status_code=204)
@@ -206,5 +219,42 @@ async def get_shared(
     if presentation is None:
         raise NotFoundError("Presentation not found")
 
+    # Best-effort analytics + reviewer comments.
+    try:
+        await db.increment_share_views(supabase, token)
+        comments = await db.list_share_comments(supabase, token)
+    except Exception:
+        comments = []
+
     spec = PresentationSpec.model_validate(presentation["spec"])
-    return SharedSpecResponse(spec=spec, title=presentation["title"])
+    return SharedSpecResponse(spec=spec, title=presentation["title"], comments=comments)
+
+
+@router.post("/shared/{token}/comments", status_code=201)
+async def post_share_comment(
+    token: str,
+    req: ShareCommentRequest,
+    request: Request,
+    supabase: AsyncClient = Depends(_supabase),
+) -> dict:
+    """Leave a reviewer comment on a shared presentation (no auth required).
+
+    Rate-limited: one comment per IP every 15 minutes (anti-spam on a
+    public, unauthenticated endpoint).
+    """
+    from app.core.ratelimit import comment_limiter
+
+    client_ip = request.client.host if request.client else "unknown"
+    comment_limiter.check(client_ip)
+
+    share = await db.get_share_by_token(supabase, token)
+    _validate_share(share)
+
+    content = req.content.strip()
+    if not content:
+        raise HTTPException(status_code=422, detail="Comment must not be empty")
+    author = (req.author_name or "").strip()[:40] or "Anonymous"
+    row = await db.create_share_comment(
+        supabase, share_token=token, author_name=author, content=content[:500],
+    )
+    return {"id": row.get("id"), "author_name": author, "content": content[:500]}

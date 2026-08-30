@@ -65,7 +65,12 @@ class AuthService:
         # profile from the provider so /auth/me always reflects persisted
         # metadata (including a server-side display-name update).
         self._verifier.user_id(access_token)
-        return await self._provider.get_user(access_token=access_token)
+        try:
+            return await self._provider.get_user(access_token=access_token)
+        except InvalidCredentialsError:
+            # Self-minted personal tokens (e.g. the 72h MCP token) carry the
+            # full identity in verified claims but have no provider session.
+            return self._verifier.to_user(access_token)
 
     async def update_profile(self, access_token: str | None, full_name: str) -> User:
         if not access_token:

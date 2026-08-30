@@ -45,13 +45,14 @@ class Settings(BaseSettings):
     # --- AI provider (exposed to users as "Slide AI") ---
     ai_provider_base_url: str = "https://opencode.ai/zen/v1"
     ai_provider_api_key: str = "public"
-    ai_provider_default_model: str = "x-preview-f-free"
-    # Models that may be selected by the application. The real model name is
-    # shown to users; only the *provider name* is hidden ("Slide AI").
-    ai_allowed_models: list[str] = Field(
-        default_factory=lambda: ["x-preview-f-free"]
-    )
-    ai_request_timeout_seconds: float = 120.0
+    # Default model used when the caller does not pick one. Must exist in the
+    # provider catalog (GET {base_url}/models); users can override it per
+    # request from the settings page / AI panel.
+    ai_provider_default_model: str = "nemotron-3-ultra-free"
+    # Optional operator allowlist. Empty = allow every model the provider
+    # catalog exposes. Non-empty = the catalog is narrowed to these ids.
+    ai_allowed_models: list[str] = Field(default_factory=list)
+    ai_request_timeout_seconds: float = 300.0
 
     @field_validator("ai_allowed_models", mode="before")
     @classmethod

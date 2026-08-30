@@ -30,6 +30,9 @@ class ThemeTokens:
 
 # 15 themes, keyed identically to the frontend (Phase 11).
 _THEMES: dict[str, ThemeTokens] = {
+    # 'custom': neutral dark canvas — decks under this theme are mostly
+    # custom-coded slides carrying their own CSS, so tokens matter little.
+    "custom": ThemeTokens("#0a0a10", "rgba(255,255,255,0.05)", "rgba(255,255,255,0.08)", "rgba(255,255,255,0.14)", "#f5f5fa", "#9a9ab4", "#65657e", "#a78bfa", "#22d3ee", "#f472b6", "'Syne', sans-serif", "'DM Sans', sans-serif", "16px", "26px", "linear-gradient(135deg, #a78bfa, #22d3ee)"),
     "modern": ThemeTokens("#0b0b16", "rgba(255,255,255,0.04)", "rgba(255,255,255,0.07)", "rgba(255,255,255,0.12)", "#f4f4ff", "#a0a0c0", "#6b6b8a", "#7c6aff", "#ff6ac1", "#37e0c8", "'Syne', sans-serif", "'DM Sans', sans-serif", "14px", "24px", "linear-gradient(135deg, #7c6aff, #ff6ac1)"),
     "corporate": ThemeTokens("#0f172a", "rgba(255,255,255,0.05)", "rgba(255,255,255,0.08)", "rgba(148,163,184,0.25)", "#e8edf5", "#94a3b8", "#64748b", "#2563eb", "#0ea5e9", "#38bdf8", "'Space Grotesk', sans-serif", "'DM Sans', sans-serif", "10px", "18px", "linear-gradient(135deg, #2563eb, #0ea5e9)"),
     "startup": ThemeTokens("#0c0a14", "rgba(255,255,255,0.05)", "rgba(255,255,255,0.09)", "rgba(255,255,255,0.12)", "#fdfdfd", "#b6b6cf", "#7c7c98", "#ff7a45", "#ffd23f", "#22d3a6", "'Syne', sans-serif", "'DM Sans', sans-serif", "16px", "28px", "linear-gradient(135deg, #ff7a45, #ffd23f)"),

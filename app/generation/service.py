@@ -67,7 +67,9 @@ class GenerationService:
         # 3. Generate the structured specification from the provider.
         try:
             spec = await self._provider.generate_spec(request)
-        except ProviderError:
+        except (ProviderError, ValidationError):
+            # Includes an invalid model selection — never leave a stuck
+            # "generating" deck behind.
             await db.delete_presentation(self._client, presentation_id)
             raise
 

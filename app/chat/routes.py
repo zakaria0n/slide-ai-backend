@@ -38,7 +38,7 @@ async def _chat_service(
 
     settings: Settings = request.app.state.settings
     provider = build_chat_provider(settings)
-    return ChatService(supabase_client, provider)
+    return ChatService(supabase_client, provider, settings)
 
 
 @router.get("/{presentation_id}/chat", response_model=ChatListResponse)
@@ -76,6 +76,7 @@ async def list_chat(
 async def chat_stream(
     presentation_id: UUID,
     req: SendChatRequest,
+    request: Request,
     oid: UUID = Depends(owner_id),
     supabase_client=Depends(supabase),
     service: ChatService = Depends(_chat_service),
@@ -91,11 +92,32 @@ async def chat_stream(
 
     row = await _require_presentation(supabase_client, presentation_id, oid)
 
+    # Resolve the caller's model choice BEFORE streaming starts so an invalid
+    # id produces a clean 4xx instead of an error inside the SSE stream.
+    settings: Settings = request.app.state.settings
+    from app.core.model_catalog import resolve_model
+    from app.core.vision import supports_vision
+
+    model = await resolve_model(settings, req.model)
+
+    from app.core.brand import get_brand_context
+
+    brand_context = await get_brand_context(supabase_client, oid)
+
+    # The screenshot only rides along when the model genuinely reads images.
+    screenshot = req.screenshot
+    if screenshot and not await supports_vision(settings, model):
+        screenshot = None
+
     return StreamingResponse(
         service.send_message_streaming(
             presentation_id, oid,
             user_text=req.message,
             current_slide_index=req.current_slide_index,
+            model=model,
+            screenshot=screenshot,
+            diagnostics=req.diagnostics,
+            brand_context=brand_context,
         ),
         media_type="text/event-stream",
         headers={

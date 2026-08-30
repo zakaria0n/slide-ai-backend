@@ -10,6 +10,7 @@ from __future__ import annotations
 from io import BytesIO
 from typing import Any
 
+import io
 from pptx import Presentation as PptxPresentation
 from pptx.util import Emu, Pt
 from pptx.dml.color import RGBColor
@@ -97,6 +98,50 @@ def _export_pptx(spec: PresentationSpec, t: ThemeTokens) -> bytes:
                 p.text = f"\u2022 {item}"
                 p.font.size = Pt(22)
                 p.font.color.rgb = text_c
+
+        # Free-positioned (Canvas-style) elements at their x/y/w/h.
+        for el in s.get("elements", []):
+            if el.get("x") is None or el.get("y") is None:
+                continue
+            x = Emu(int(float(el["x"]) / 100 * 13_333_333))
+            y = Emu(int(float(el["y"]) / 100 * 7_500_000))
+            w = Emu(int(float(el.get("w") or 40) / 100 * 13_333_333))
+            h = Emu(int(float(el.get("h") or 20) / 100 * 7_500_000))
+            etype = el.get("type")
+            if etype in ("title", "subtitle", "paragraph"):
+                size = 40 if etype == "title" else 24 if etype == "subtitle" else 18
+                color = text_c if etype == "title" else muted_c
+                box = ppt_slide.shapes.add_textbox(x, y, w, h)
+                tf = box.text_frame
+                tf.word_wrap = True
+                _add_text(tf, str(el.get("text", "")), size, color, bold=etype == "title")
+            elif etype == "image" and el.get("src"):
+                import httpx as _httpx
+
+                try:
+                    resp = _httpx.get(el["src"], timeout=10)
+                    img_stream = io.BytesIO(resp.content)
+                    if el.get("flip"):
+                        pass  # python-pptx rotation/flip support is limited; insert as-is
+                    ppt_slide.shapes.add_picture(img_stream, x, y, width=w)
+                except Exception:
+                    pass
+            elif etype == "shape":
+                fill = _hex(el.get("fill") or t.accent)
+                shp = el.get("shape", "rect")
+                if shp == "circle":
+                    from pptx.enum.shapes import MSO_SHAPE
+
+                    shape_obj = ppt_slide.shapes.add_shape(MSO_SHAPE.OVAL, x, y, w, h)
+                elif shp == "rect":
+                    from pptx.enum.shapes import MSO_SHAPE
+
+                    shape_obj = ppt_slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, x, y, w, h)
+                else:
+                    continue
+                shape_obj.fill.solid()
+                shape_obj.fill.fore_color.rgb = fill
+                shape_obj.line.fill.background()
 
         # Table
         for el in g.get("table", []):
