@@ -495,7 +495,8 @@ class OnlineSpecProvider(SpecProvider):
             except ProviderError as exc:
                 last_error = exc
         raise last_error or ProviderError(
-            f"{DISPLAYED_PROVIDER} could not produce a valid specification"
+            f"{DISPLAYED_PROVIDER} is busy right now and could not generate your deck. "
+            "Please try again in a minute — or pick a different model in Settings."
         )
 
     async def _generate_with_model(self, model: str, request: GenerationRequest) -> PresentationSpec:

@@ -413,9 +413,12 @@ async def update_presentation_spec(
                     "Reload to get the latest version before saving."
                 )
 
-    old_spec = PresentationSpec.model_validate(row["spec"])
+    # Specless decks (e.g. drafts from the "Blank deck" flow) are valid:
+    # the PUT defines their first spec, so there is nothing to snapshot.
+    old_spec = PresentationSpec.model_validate(row["spec"]) if row.get("spec") else None
     from app.presentations.versioning import snapshot_if_changed
-    await snapshot_if_changed(supabase, presentation_id, owner_id, old_spec, note="manual edit")
+    if old_spec is not None:
+        await snapshot_if_changed(supabase, presentation_id, owner_id, old_spec, note="manual edit")
     saved = await db.update_presentation(
         supabase, presentation_id,
         spec=spec.model_dump(),
@@ -469,6 +472,8 @@ async def ai_edit_presentation(
     model = await resolve_model(settings, req.model)
 
     row = await _require_presentation(supabase, presentation_id, owner_id, write=True)
+    if not row.get("spec"):
+        raise NotFoundError("Presentation specification not found")
     current_spec = PresentationSpec.model_validate(row["spec"])
 
     from app.core.brand import get_brand_context
@@ -575,6 +580,8 @@ async def restore_version(
     if version is None:
         raise NotFoundError("Version not found")
 
+    if not row.get("spec"):
+        raise NotFoundError("Presentation specification not found")
     old_spec = PresentationSpec.model_validate(row["spec"])
     restored_spec = PresentationSpec.model_validate(version["spec"])
 
