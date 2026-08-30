@@ -76,10 +76,25 @@ def _api_base(request: Request) -> str:
     return _base_url(request) + settings.api_v1_prefix
 
 
+def _mcp_resource_uri(request: Request) -> str:
+    """The MCP server URI as the CLIENT sees it.
+
+    Behind the dev proxy (or a reverse proxy) the backend's own base URL is
+    its internal host:port — clients connect via the public/web origin, and
+    the MCP auth spec requires the advertised `resource` to match that URL
+    (or its origin). So we build it from the frontend origin.
+    """
+    settings: Settings = request.app.state.settings
+    origin = settings.resolved_frontend_origin
+    if origin:
+        return origin + settings.api_v1_prefix + "/mcp"
+    return _api_base(request) + "/mcp"
+
+
 def _protected_resource_payload(request: Request, resource_uri: str | None = None) -> dict:
     api = _api_base(request)
     return {
-        "resource": resource_uri or (api + "/mcp"),
+        "resource": resource_uri or _mcp_resource_uri(request),
         "authorization_servers": [api],
         "scopes_supported": ["mcp"],
         "bearer_methods_supported": ["header"],
@@ -93,7 +108,7 @@ async def protected_resource_root(request: Request) -> dict:
 
 @root_router.get("/.well-known/oauth-protected-resource/api/v1/mcp")
 async def protected_resource_root_pathed(request: Request) -> dict:
-    return _protected_resource_payload(request, _api_base(request) + "/mcp")
+    return _protected_resource_payload(request, _mcp_resource_uri(request))
 
 
 @router.get("/.well-known/oauth-protected-resource")
