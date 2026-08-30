@@ -123,6 +123,7 @@ def settings_api_prefix(request: Request) -> str:
 
 
 @root_router.get("/.well-known/oauth-authorization-server")
+@root_router.get("/.well-known/oauth-authorization-server/api/v1")
 @router.get("/.well-known/oauth-authorization-server")
 @router.get("/api/v1/.well-known/oauth-authorization-server")
 async def authorization_server_metadata(request: Request) -> dict:
