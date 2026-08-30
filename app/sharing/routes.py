@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from supabase import AsyncClient
 
@@ -228,6 +229,33 @@ async def get_shared(
 
     spec = PresentationSpec.model_validate(presentation["spec"])
     return SharedSpecResponse(spec=spec, title=presentation["title"], comments=comments)
+
+
+class ShareSlideTimeRequest(BaseModel):
+    time_json: dict = Field(default_factory=dict, description='{"0": 12, "1": 8} — seconds per slide')
+
+
+@router.post("/shared/{token}/analytics", status_code=204)
+async def post_share_slide_time(
+    token: str,
+    req: ShareSlideTimeRequest,
+    supabase: AsyncClient = Depends(_supabase),
+) -> Response:
+    """Record time-per-slide from a shared-deck viewer (fire-and-forget)."""
+    share = await db.get_share_by_token(supabase, token)
+    _validate_share(share)
+
+    cleaned = {}
+    for key, seconds in list(req.time_json.items())[:100]:
+        try:
+            cleaned[str(int(key))] = max(0, min(int(seconds), 3600))
+        except (TypeError, ValueError):
+            continue
+    try:
+        await supabase.table("presentation_shares").update({"slide_time_json": cleaned}).eq("token", token).execute()
+    except Exception:
+        pass
+    return Response(status_code=204)
 
 
 @router.post("/shared/{token}/comments", status_code=201)
