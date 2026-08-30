@@ -30,6 +30,10 @@ from app.core.config import Settings
 
 router = APIRouter(tags=["oauth"])
 
+# Well-known discovery must live at the ROOT (RFC 9728 / MCP auth spec):
+# clients look for /.well-known/... before trying path-inserted variants.
+root_router = APIRouter(tags=["oauth"])
+
 _TTL_SECONDS = 30 * 24 * 3600
 
 # In-memory stores (single process; pending flows are short-lived).
@@ -72,16 +76,30 @@ def _api_base(request: Request) -> str:
     return _base_url(request) + settings.api_v1_prefix
 
 
-@router.get("/.well-known/oauth-protected-resource")
-@router.get("/api/v1/.well-known/oauth-protected-resource")
-async def protected_resource(request: Request) -> dict:
+def _protected_resource_payload(request: Request, resource_uri: str | None = None) -> dict:
     api = _api_base(request)
     return {
-        "resource": api + "/mcp",
-        "authorization_servers": [_base_url(request) + settings_api_prefix(request)],
+        "resource": resource_uri or (api + "/mcp"),
+        "authorization_servers": [api],
         "scopes_supported": ["mcp"],
         "bearer_methods_supported": ["header"],
     }
+
+
+@root_router.get("/.well-known/oauth-protected-resource")
+async def protected_resource_root(request: Request) -> dict:
+    return _protected_resource_payload(request)
+
+
+@root_router.get("/.well-known/oauth-protected-resource/api/v1/mcp")
+async def protected_resource_root_pathed(request: Request) -> dict:
+    return _protected_resource_payload(request, _api_base(request) + "/mcp")
+
+
+@router.get("/.well-known/oauth-protected-resource")
+@router.get("/api/v1/.well-known/oauth-protected-resource")
+async def protected_resource(request: Request) -> dict:
+    return _protected_resource_payload(request)
 
 
 def settings_api_prefix(request: Request) -> str:
@@ -89,6 +107,7 @@ def settings_api_prefix(request: Request) -> str:
     return settings.api_v1_prefix
 
 
+@root_router.get("/.well-known/oauth-authorization-server")
 @router.get("/.well-known/oauth-authorization-server")
 @router.get("/api/v1/.well-known/oauth-authorization-server")
 async def authorization_server_metadata(request: Request) -> dict:
@@ -201,8 +220,9 @@ async def authorize(
         "code_challenge_method": code_challenge_method or "S256",
         "created": _NOW(),
     }
+    settings: Settings = request.app.state.settings
     consent_url = (
-        f"{_base_url(request)}/oauth/authorize?auth_id={auth_id}"
+        f"{settings.resolved_frontend_origin}/oauth/authorize?auth_id={auth_id}"
         f"&client_name={_clients.get(client_id, {}).get('name', 'MCP client')}"
     )
     return RedirectResponse(consent_url, status_code=302)

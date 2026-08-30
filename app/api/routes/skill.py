@@ -131,14 +131,19 @@ async def download_skill(request: Request) -> Response:
     install_md = (
         "# Install\n\n"
         f"MCP server URL: `{api}/mcp`\n\n"
-        "## ZKR / Claude Code\n\n"
-        f"`zkr mcp add --transport http slide-ai {api}/mcp` or add it to `.mcp.json`:\n\n"
+        "## ZKR / Claude Code (recommended — no token needed)\n\n"
+        f"`zkr mcp add --transport http slide-ai {api}/mcp`\n\n"
+        "or add it to `.mcp.json`:\n\n"
         "```json\n"
-        '{"mcpServers": {"slide-ai": {"type": "http", "url": "'
-        + api + '/mcp", "headers": {"Authorization": "Bearer <TOKEN>"}}}}\n'
+        '{"mcpServers": {"slide-ai": {"type": "http", "url": "' + api + "/mcp\"}}}\n"
         "```\n\n"
-        "Or just add the server WITHOUT headers — the client will open the "
-        "browser for a 30-day OAuth login.\n\n"
+        "Then run your CLI, open `/mcp`, pick **slide-ai -> Authenticate**: the "
+        "browser opens, click **Approve**, done — 30-day session, zero "
+        "copy-paste (OAuth authorization code + PKCE is implemented on the "
+        "server).\n\n"
+        "## Scripted alternative\n\n"
+        "Mint a 30-day token (web app > MCP > Token 30j) and add "
+        '"headers": {"Authorization": "Bearer <TOKEN>"} to the config.\n\n'
         "## Skill folder\n\n"
         "Copy this ZIP's contents into your agent's skills folder, e.g.:\n"
         "- Claude Code: `~/.claude/skills/slide-ai/SKILL.md`\n"

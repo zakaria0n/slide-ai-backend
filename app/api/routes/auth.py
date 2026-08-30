@@ -182,12 +182,13 @@ async def device_start(request: Request) -> dict:
     it in the browser — no manual token copy-paste."""
     from app.auth.device_flow import start_pairing
 
-    base = str(request.base_url).rstrip("/")
+    settings: Settings = _app_settings(request)
+    frontend = settings.resolved_frontend_origin
     pairing = start_pairing()
     return {
         "device_code": pairing["device_code"],
         "user_code": pairing["user_code"],
-        "verification_url": f"{base}/oauth/device?user_code={pairing['user_code']}",
+        "verification_url": f"{frontend}/oauth/device?user_code={pairing['user_code']}",
         "expires_in": pairing["expires_in"],
         "interval": 2,
     }

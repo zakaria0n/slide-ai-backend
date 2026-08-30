@@ -77,6 +77,18 @@ class Settings(BaseSettings):
         default_factory=lambda: ["http://localhost:5173"]
     )
 
+    # Where the web app lives — OAuth consent / device verification pages
+    # redirect there. Empty = first CORS origin.
+    frontend_origin: str = ""
+
+    @property
+    def resolved_frontend_origin(self) -> str:
+        if self.frontend_origin:
+            return self.frontend_origin.rstrip("/")
+        if self.cors_allowed_origins:
+            return str(self.cors_allowed_origins[0]).rstrip("/")
+        return ""
+
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
