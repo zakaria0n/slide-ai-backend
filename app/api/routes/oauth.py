@@ -208,8 +208,13 @@ async def approve_authorization(
     }
     _auth_requests.pop(req.auth_id, None)
 
+    from urllib.parse import quote as _quote
+
     sep = "&" if "?" in pending["redirect_uri"] else "?"
-    redirect = f"{pending['redirect_uri']}{sep}code={code}&state={pending['state']}"
+    redirect = (
+        f"{pending['redirect_uri']}{sep}code={code}"
+        f"&state={_quote(str(pending['state']), safe='')}"
+    )
     return {"redirect": redirect}
 
 
@@ -262,7 +267,7 @@ def _verify_pkce(verifier: str, challenge: str, method: str) -> bool:
 
 
 @router.post("/oauth/token")
-async def token_endpoint(req: TokenRequest, request: Request) -> dict:
+async def token_endpoint(request: Request) -> dict:
     from app.auth.jwt_verifier import JWTVerifier
 
     _prune()
@@ -271,9 +276,27 @@ async def token_endpoint(req: TokenRequest, request: Request) -> dict:
     if verifier is None:
         verifier = JWTVerifier(settings.supabase_jwt_secret or "dev-insecure-secret")
 
+    # OAuth clients post the token request FORM-URLENCODED (per RFC 6749);
+    # accept JSON too for convenience.
+    content_type = request.headers.get("content-type", "")
+    if "json" in content_type:
+        raw = await request.json()
+    else:
+        form = await request.form()
+        raw = dict(form)
+    try:
+        req = TokenRequest(**raw)
+    except Exception as exc:
+        return JSONResponse(status_code=400, content={"error": "invalid_request", "error_description": f"Bad token request: {exc}"})
+
     if req.grant_type == "authorization_code":
         entry = _codes.get(req.code or "")
         if entry is None:
+            import logging as _log
+
+            _log.getLogger("app.oauth").warning(
+                "token exchange: unknown/expired code (known: %d)", len(_codes)
+            )
             return JSONResponse(status_code=400, content={"error": "invalid_grant", "error_description": "Unknown or expired code"})
         if req.redirect_uri != entry["redirect_uri"]:
             return JSONResponse(status_code=400, content={"error": "invalid_grant", "error_description": "redirect_uri mismatch"})

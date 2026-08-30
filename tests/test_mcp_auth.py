@@ -154,6 +154,41 @@ def test_oauth_full_authorization_code_flow(client) -> None:
     assert tokens["expires_in"] == 30 * 24 * 3600
     assert tokens["refresh_token"]
 
+    # 5b. FORM-URLENCODED exchange (how real OAuth clients send it).
+    def _get_code() -> tuple[str, str]:
+        loc = client.get(
+            "/api/v1/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client_id,
+                "redirect_uri": "http://localhost:1/callback",
+                "state": "st4te",
+                "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+                "code_challenge_method": "S256",
+            },
+            follow_redirects=False,
+        ).headers["location"]
+        auth_id = loc.split("auth_id=")[1].split("&")[0]
+        approved = client.post(
+            "/api/v1/oauth/authorize/approve",
+            json={"auth_id": auth_id},
+            headers=_headers("12345678-1234-1234-1234-123456789012"),
+        ).json()
+        return approved["redirect"].split("code=")[1].split("&")[0]
+
+    form = client.post(
+        "/api/v1/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": _get_code(),
+            "redirect_uri": "http://localhost:1/callback",
+            "code_verifier": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    assert form.status_code == 200, form.text
+    assert form.json()["access_token"]
+
     # 6. Refresh grant rotates.
     refreshed = client.post(
         "/api/v1/oauth/token",
