@@ -24,7 +24,7 @@ from supabase import AsyncClient
 
 from app.api.deps import owner_id, supabase
 from app.core.config import Settings
-from app.mcp.tools import MCP_TOOL_DEFINITIONS, ToolContext, call_tool
+from app.mcp.tools import MCP_TOOL_DEFINITIONS, McpToolOutput, ToolContext, call_tool
 
 logger = logging.getLogger("slideai.mcp")
 
@@ -115,11 +115,19 @@ async def _handle_message(ctx: ToolContext, msg: Any) -> dict | None:
                 "tools/call requires 'name' (string) and 'arguments' (object)",
             )
         try:
-            text = await call_tool(ctx, name, arguments)
+            result = await call_tool(ctx, name, arguments)
         except Exception as exc:  # noqa: BLE001 — never fail the HTTP layer
             logger.exception("mcp tool %r crashed", name)
-            text = json.dumps({"error": f"{type(exc).__name__}: {exc}"})
-        return _text_result(msg_id, text, is_error=False)
+            result = json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+
+        if isinstance(result, McpToolOutput):
+            content: list[dict[str, Any]] = [
+                {"type": "image", "data": img["data"], "mimeType": img["mimeType"]}
+                for img in result.images
+            ]
+            content.append({"type": "text", "text": result.text})
+            return _result(msg_id, {"content": content})
+        return _text_result(msg_id, result, is_error=False)
 
     if method == "resources/list":
         return _result(msg_id, {"resources": []})

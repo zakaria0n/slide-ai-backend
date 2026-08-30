@@ -22,6 +22,8 @@ from app.chat.routes import router as chat_router
 from app.api.routes.models import router as models_router
 from app.api.routes.brand_kit import router as brand_kit_router
 from app.api.routes.slide_library import router as slide_library_router
+from app.api.routes.oauth import router as oauth_router
+from app.api.routes.skill import router as skill_router
 from app.mcp.routes import router as mcp_router
 
 
@@ -156,6 +158,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(models_router, prefix=v1)
     app.include_router(brand_kit_router, prefix=v1)
     app.include_router(slide_library_router, prefix=v1)
+    app.include_router(oauth_router, prefix=v1)
+    app.include_router(skill_router, prefix=v1)
     app.include_router(mcp_router, prefix=v1)
 
     @app.get("/", tags=["meta"])

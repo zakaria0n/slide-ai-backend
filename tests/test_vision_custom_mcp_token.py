@@ -58,7 +58,7 @@ def test_mcp_token_mints_72h_verifiable_token(client) -> None:
     res = client.post("/api/v1/auth/mcp-token", headers=_auth(_token(uid)))
     assert res.status_code == 200, res.text
     body = res.json()
-    assert body["expires_in"] == 72 * 3600
+    assert body["expires_in"] == 30 * 24 * 3600
     assert body["purpose"] == "mcp"
 
     # The minted token must authenticate against a protected endpoint.

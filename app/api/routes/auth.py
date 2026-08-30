@@ -14,6 +14,8 @@ from fastapi import APIRouter, Depends, Request
 
 from app.api.deps import extract_token
 from app.api.deps import extract_token
+from fastapi import HTTPException
+from pydantic import BaseModel
 from app.auth.schemas import (
     AuthResponse,
     MessageResponse,
@@ -27,6 +29,18 @@ from app.auth.service import AuthService
 from app.core.config import Settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class DeviceAuthorizeRequest(BaseModel):
+    user_code: str
+
+
+class DevicePollRequest(BaseModel):
+    device_code: str
 
 
 def _app_settings(request: Request) -> Settings:
@@ -119,7 +133,7 @@ async def create_mcp_token(
         settings: Settings = _app_settings(request)
         verifier = JWTVerifier(settings.supabase_jwt_secret or "dev-insecure-secret")
     user = verifier.to_user(token)
-    expires_in = 72 * 3600
+    expires_in = 30 * 24 * 3600  # 30 days
     full_name = (user.metadata or {}).get("full_name")
     access_token = verifier.mint_access_token(
         user.id, user.email, expires_in_seconds=expires_in,
@@ -131,6 +145,90 @@ async def create_mcp_token(
         "expires_in": expires_in,
         "purpose": "mcp",
     }
+
+
+@router.post("/refresh")
+async def refresh_session(req: RefreshRequest, request: Request) -> dict:
+    """Refresh a Supabase session (rotates the refresh token).
+
+    Keeps web sessions alive for as long as the refresh token stays valid —
+    the frontend calls this automatically before the access token expires.
+    """
+    import httpx
+
+    settings: Settings = _app_settings(request)
+    if not settings.supabase_url or not settings.supabase_anon_key:
+        raise HTTPException(status_code=501, detail="Session refresh is not configured")
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{settings.supabase_url}/auth/v1/token?grant_type=refresh_token",
+            headers={"apikey": settings.supabase_anon_key, "Content-Type": "application/json"},
+            json={"refresh_token": req.refresh_token},
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    body = resp.json()
+    return {
+        "access_token": body.get("access_token"),
+        "refresh_token": body.get("refresh_token"),
+        "expires_in": body.get("expires_in"),
+        "user": body.get("user"),
+    }
+
+
+@router.post("/device/start")
+async def device_start(request: Request) -> dict:
+    """Start a device-flow pairing: the CLI shows a code, the user approves
+    it in the browser — no manual token copy-paste."""
+    from app.auth.device_flow import start_pairing
+
+    base = str(request.base_url).rstrip("/")
+    pairing = start_pairing()
+    return {
+        "device_code": pairing["device_code"],
+        "user_code": pairing["user_code"],
+        "verification_url": f"{base}/oauth/device?user_code={pairing['user_code']}",
+        "expires_in": pairing["expires_in"],
+        "interval": 2,
+    }
+
+
+@router.post("/device/authorize")
+async def device_authorize(
+    req: DeviceAuthorizeRequest,
+    request: Request,
+    token: str = Depends(extract_token),
+) -> dict:
+    from app.auth.device_flow import approve
+    from app.core.exceptions import NotFoundError
+
+    verifier = getattr(request.app.state, "jwt_verifier", None)
+    if verifier is None:
+        from app.auth.jwt_verifier import JWTVerifier
+
+        verifier = JWTVerifier(_app_settings(request).supabase_jwt_secret or "dev-insecure-secret")
+    user = verifier.to_user(token)
+    full_name = (user.metadata or {}).get("full_name")
+    access_token = verifier.mint_access_token(
+        user.id, user.email, expires_in_seconds=30 * 24 * 3600,
+        full_name=str(full_name) if full_name else None, token_type="mcp",
+    )
+    try:
+        approve(req.user_code, user_id=user.id, email=user.email, access_token=access_token)
+    except KeyError as exc:
+        raise NotFoundError("Unknown or expired device code") from exc
+    return {"status": "approved"}
+
+
+@router.post("/device/poll")
+async def device_poll(req: DevicePollRequest, request: Request) -> dict:
+    from app.auth.device_flow import poll
+
+    settings: Settings = _app_settings(request)
+    result = poll(req.device_code, settings.supabase_jwt_secret or "dev-insecure-secret")
+    if result is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired device code")
+    return result
 
 
 @router.patch("/me", response_model=UserResponse)

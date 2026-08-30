@@ -101,7 +101,7 @@ class JWTVerifier:
             meta["full_name"] = claims["full_name"]
         return User(id=uid, email=email, metadata=meta)
 
-    def mint_access_token(self, user_id: UUID, email: str, *, expires_in_seconds: int, full_name: str | None = None) -> str:
+    def mint_access_token(self, user_id: UUID, email: str, *, expires_in_seconds: int, full_name: str | None = None, token_type: str = 'access') -> str:
         """Mint a long-lived access token signed with the same secret and
         audience as the session verifier.
 
@@ -119,9 +119,14 @@ class JWTVerifier:
             "iat": now,
             "exp": now + expires_in_seconds,
         }
+        claims["typ"] = token_type
         if full_name:
             claims["full_name"] = full_name
         return jwt.encode(claims, self._secret, algorithm="HS256")
+
+    def decode_claims(self, token: str) -> dict:
+        """Verified claims (signature/exp/aud) for tokens we minted ourselves."""
+        return self._verify(token)
 
     @staticmethod
     def _user_id_from(claims: dict[str, object]) -> UUID:

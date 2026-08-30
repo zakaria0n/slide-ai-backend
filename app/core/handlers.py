@@ -20,10 +20,15 @@ def register_exception_handlers(app: FastAPI) -> None:
             logging.getLogger("app").warning(
                 "Provider error surfaced as 'Slide AI': %s", exc.message
             )
-        return JSONResponse(
+        response = JSONResponse(
             status_code=exc.status_code,
             content=exc.to_dict(),
         )
+        if exc.status_code == 401:
+            # MCP clients (Claude Code / ZKR) use this to discover OAuth auth.
+            resource = str(_.base_url).rstrip("/") + "/.well-known/oauth-protected-resource"
+            response.headers["WWW-Authenticate"] = f'Bearer resource_metadata="{resource}"'
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def _handle_validation_error(

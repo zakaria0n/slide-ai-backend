@@ -26,6 +26,18 @@ _UUID_RE_NOTE = "UUID string returned when the presentation was created (list_pr
 
 
 @dataclass
+class McpToolOutput:
+    """Rich tool result: text plus optional images (base64 PNG)."""
+
+    text: str = ""
+    images: list[dict[str, str]] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.images is None:
+            self.images = []
+
+
+@dataclass
 class ToolContext:
     """Per-call context: the caller's data client, identity and settings."""
 
@@ -197,6 +209,71 @@ async def _h_generate_presentation(ctx: ToolContext, args: dict) -> str:
         "slide_count": saved.get("slide_count"),
         "model": model,
     })
+
+
+async def _h_get_slide_screenshot(ctx: ToolContext, args: dict) -> McpToolOutput:
+    """Render one slide with headless Chromium and return a PNG image.
+
+    Lets vision-capable client models actually SEE the rendered slide
+    instead of reasoning blind over the JSON spec.
+    """
+    import os
+    import tempfile
+
+    pid, row = await _require_row(ctx, args["presentation_id"], write=False)
+    spec = PresentationSpec.model_validate(row["spec"])
+    slide_index = int(args.get("slide_index") or 0)
+    if slide_index < 0 or slide_index >= len(spec.slides):
+        return _json({"error": f"Invalid slide_index {slide_index}; the deck has {len(spec.slides)} slides"})
+
+    from app.export.html_exporter import render_spec_html
+    from app.export.html_theme import tokens_for
+
+    theme = tokens_for(spec.meta.theme)
+    doc = render_spec_html(spec, theme, animate=False)
+
+    with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as f:
+        f.write(doc)
+        html_path = f.name
+
+    import base64
+
+    b64 = ""
+    try:
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page(viewport={"width": 1280, "height": 720})
+            await page.goto(f"file:///{html_path.replace(os.sep, '/')}", wait_until="networkidle")
+            await page.wait_for_timeout(400)
+            element = page.locator(".slide").nth(slide_index)
+            png = await element.screenshot()
+            await browser.close()
+        b64 = base64.b64encode(png).decode("ascii")
+    except Exception as exc:  # noqa: BLE001 — surfaced as tool error text
+        return _json({
+            "error": f"Screenshot failed: {exc}",
+            "hint": "The server needs the Chromium binary: python -m playwright install chromium",
+        })
+    finally:
+        try:
+            os.unlink(html_path)
+        except OSError:
+            pass
+
+    slide = spec.slides[slide_index]
+    title_el = next((e for e in slide.elements if getattr(e, "type", "") == "title"), None)
+    title = getattr(title_el, "text", "") if title_el else ""
+    return McpToolOutput(
+        text=(
+            f"Screenshot of slide {slide_index + 1}/{len(spec.slides)} "
+            f"('{title or slide.layout}') — attached as an image. This is the "
+            "RENDERED slide: use it to judge layout, spacing and readability. "
+            "The JSON structure is available via get_slide_elements."
+        ),
+        images=[{"data": b64, "mimeType": "image/png"}],
+    )
 
 
 async def _h_get_generation_job(ctx: ToolContext, args: dict) -> str:
@@ -433,7 +510,7 @@ _DECK_TOOLS: list[dict] = [
     },
     {
         "name": "generate_presentation",
-        "description": "Generate a complete presentation from a topic with Slide AI. Defaults to theme=custom (full creative freedom: the model authors its own HTML/CSS/JS slide layouts and animations). Pass a standard theme (modern, corporate, startup, education, medical, finance, luxury, minimal, glass, dark, neon, apple, google, microsoft, openai) for classic structured decks. Returns the new presentation id. Set async_mode=true for large decks: you get a job_id to poll with get_generation_job instead of blocking.",
+        "description": "OPT-IN TOOL — DO NOT CALL BY DEFAULT. You are the LLM: build the deck yourself with create_presentation + add_slide/update_slide/add_element/update_custom_slide (better, and it follows your analysis). Call this ONLY when the user EXPLICITLY asks to send the job to Slide AI\’s generation model (e.g. \’send this prompt to the Slide AI generator\’). Generates a full deck from the topic; defaults to theme=custom (full creative freedom). Returns the new presentation id, or a job_id with async_mode=true for large decks.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -450,7 +527,7 @@ _DECK_TOOLS: list[dict] = [
     },
     {
         "name": "ai_edit_presentation",
-        "description": "Apply a natural-language instruction to an existing presentation with Slide AI (rewrites text, restructures slides, adds animations...). Returns a summary and the changed slide indexes.",
+        "description": "Delegate this slide/deck edit to Slide AI\’s model. PREFER the granular tools (update_element, add_element, set_element_animation...) which you drive yourself — only use this for broad natural-language rewrites, or when the user explicitly asks for Slide AI\’s model. Returns a summary and the changed slide indexes.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -464,6 +541,18 @@ _DECK_TOOLS: list[dict] = [
                 "model": {"type": "string", "description": "Optional AI model id. Omit for the default."},
             },
             "required": ["presentation_id", "instruction"],
+        },
+    },
+    {
+        "name": "get_slide_screenshot",
+        "description": "Render one slide with headless Chromium and return a PNG screenshot of the ACTUAL rendered slide, so you can SEE the layout (slow: takes a few seconds). Use after building or editing slides to visually verify spacing/overflow, whenever you want to see the design, or when the user asks what a slide looks like.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "presentation_id": {"type": "string", "description": _UUID_RE_NOTE},
+                "slide_index": {"type": "integer", "description": "0-based slide index"},
+            },
+            "required": ["presentation_id", "slide_index"],
         },
     },
     {
@@ -552,6 +641,7 @@ MCP_TOOL_HANDLERS: dict[str, Handler] = {
     "create_presentation": _h_create_presentation,
     "generate_presentation": _h_generate_presentation,
     "get_generation_job": _h_get_generation_job,
+    "get_slide_screenshot": _h_get_slide_screenshot,
     "rename_presentation": _h_rename_presentation,
     "duplicate_presentation": _h_duplicate_presentation,
     "search_assets": _h_search_assets,
@@ -569,7 +659,8 @@ async def call_tool(ctx: ToolContext, name: str, arguments: dict) -> str:
         known = ", ".join(sorted(MCP_TOOL_HANDLERS))
         return _json({"error": f"Unknown tool '{name}'. Available tools: {known}."})
     try:
-        return await handler(ctx, arguments or {})
+        result = await handler(ctx, arguments or {})
+        return result
     except AppError as exc:
         return _json({"error": exc.message, "code": exc.code})
     except Exception as exc:  # noqa: BLE001 — surfaced to the agent in-band
