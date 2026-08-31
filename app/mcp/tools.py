@@ -217,8 +217,7 @@ async def _h_get_slide_screenshot(ctx: ToolContext, args: dict) -> McpToolOutput
     Lets vision-capable client models actually SEE the rendered slide
     instead of reasoning blind over the JSON spec.
     """
-    import os
-    import tempfile
+    import base64
 
     pid, row = await _require_row(ctx, args["presentation_id"], write=False)
     spec = PresentationSpec.model_validate(row["spec"])
@@ -226,41 +225,21 @@ async def _h_get_slide_screenshot(ctx: ToolContext, args: dict) -> McpToolOutput
     if slide_index < 0 or slide_index >= len(spec.slides):
         return _json({"error": f"Invalid slide_index {slide_index}; the deck has {len(spec.slides)} slides"})
 
-    from app.export.html_exporter import render_spec_html
-    from app.export.html_theme import tokens_for
+    from app.export.slide_shot import render_slide_png
 
-    theme = tokens_for(spec.meta.theme)
-    doc = render_spec_html(spec, theme, animate=False)
-
-    with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as f:
-        f.write(doc)
-        html_path = f.name
-
-    import base64
-
-    b64 = ""
     try:
-        from playwright.async_api import async_playwright
-
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page(viewport={"width": 1280, "height": 720})
-            await page.goto(f"file:///{html_path.replace(os.sep, '/')}", wait_until="networkidle")
-            await page.wait_for_timeout(400)
-            element = page.locator(".slide").nth(slide_index)
-            png = await element.screenshot()
-            await browser.close()
-        b64 = base64.b64encode(png).decode("ascii")
+        png = await render_slide_png(
+            spec, slide_index,
+            theme_hint=spec.meta.theme if spec.meta else None,
+            width=1280, height=720,
+        )
     except Exception as exc:  # noqa: BLE001 — surfaced as tool error text
         return _json({
             "error": f"Screenshot failed: {exc}",
             "hint": "The server needs the Chromium binary: python -m playwright install chromium",
         })
-    finally:
-        try:
-            os.unlink(html_path)
-        except OSError:
-            pass
+    if png is None:
+        return _json({"error": "Screenshot produced no image"})
 
     slide = spec.slides[slide_index]
     title_el = next((e for e in slide.elements if getattr(e, "type", "") == "title"), None)
@@ -272,7 +251,7 @@ async def _h_get_slide_screenshot(ctx: ToolContext, args: dict) -> McpToolOutput
             "RENDERED slide: use it to judge layout, spacing and readability. "
             "The JSON structure is available via get_slide_elements."
         ),
-        images=[{"data": b64, "mimeType": "image/png"}],
+        images=[{"data": base64.b64encode(png).decode("ascii"), "mimeType": "image/png"}],
     )
 
 

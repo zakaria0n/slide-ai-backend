@@ -48,7 +48,7 @@ def _add_text(tf, text: str, size: int, color: RGBColor, bold: bool = False, ita
     return p
 
 
-def _export_pptx(spec: PresentationSpec, t: ThemeTokens) -> bytes:
+async def _export_pptx(spec: PresentationSpec, t: ThemeTokens) -> bytes:
     prs = PptxPresentation()
     prs.slide_width = Emu(13_333_333)  # 16:9
     prs.slide_height = Emu(7_500_000)
@@ -60,12 +60,23 @@ def _export_pptx(spec: PresentationSpec, t: ThemeTokens) -> bytes:
     muted_c = _hex(t.text_muted)
     surface2 = _hex(t.surface2)
 
+    ppt_slide_list = []
     for slide in spec.slides:
         s = slide.model_dump() if hasattr(slide, "model_dump") else slide
         ppt_slide = prs.slides.add_slide(blank)
+        ppt_slide_list.append(ppt_slide)
         # background fill
         ppt_slide.background.fill.solid()
         ppt_slide.background.fill.fore_color.rgb = bg
+
+        # Free-coded slides are captured as rendered images in the pass below
+        # (a static text dump would not represent them at all).
+        code = s.get("code") or {}
+        if s.get("layout") == "custom" and isinstance(code, dict) and (
+            code.get("html") or code.get("css") or code.get("js")
+        ):
+            continue
+
         g = _group(s)
 
         # Title
@@ -265,6 +276,35 @@ def _export_pptx(spec: PresentationSpec, t: ThemeTokens) -> bytes:
             tf = box.text_frame
             _add_text(tf, label, 24, accent)
 
+    # ── Rendered-image pass ──────────────────────────────────────────────
+    # Custom-coded slides and slides whose native shapes came out empty are
+    # captured with headless Chromium and inserted as full-slide images, so
+    # animation-heavy / free-coded decks produce faithful PPTX files instead
+    # of empty slides.
+    custom_idx = [
+        i for i, s_obj in enumerate(spec.slides)
+        if s_obj.layout == "custom"
+    ]
+    empty_idx = [i for i, ps in enumerate(ppt_slide_list) if len(ps.shapes) == 0]
+    need = sorted(set(custom_idx) | set(empty_idx))
+    if need:
+        try:
+            from app.export.slide_shot import render_slide_pngs
+
+            shots = await render_slide_pngs(
+                spec, need,
+                theme_hint=getattr(spec.meta, "theme", None),
+                width=1600, height=900,
+            )
+            for i, png in shots.items():
+                ppt_slide_list[i].shapes.add_picture(
+                    io.BytesIO(png), Emu(0), Emu(0),
+                    width=prs.slide_width, height=prs.slide_height,
+                )
+        except Exception:
+            # No Chromium / render failure: keep the text-only content.
+            pass
+
     # Document property (brand only)
     prs.core_properties.title = (getattr(spec.meta, "title", "Slide AI Presentation") if spec.meta else "Slide AI Presentation")
     prs.core_properties.author = "Slide AI"
@@ -277,9 +317,9 @@ def _export_pptx(spec: PresentationSpec, t: ThemeTokens) -> bytes:
 class PptxExportStrategy(ExportStrategy):
     format = ExportFormat.PPTX
 
-    def export(self, spec: PresentationSpec, theme_hint: str | None = None) -> ExportedFile:
+    async def export(self, spec: PresentationSpec, theme_hint: str | None = None) -> ExportedFile:
         t = tokens_for(theme_hint or (getattr(spec.meta, "theme", None) if spec.meta else None))
-        data = _export_pptx(spec, t)
+        data = await _export_pptx(spec, t)
         title = getattr(spec.meta, "title", "presentation") if spec.meta else "presentation"
         safe = "".join(c if c.isalnum() else "-" for c in str(title)).strip("-") or "presentation"
         return ExportedFile(data, "application/vnd.openxmlformats-officedocument.presentationml.presentation", f"{safe}.pptx")

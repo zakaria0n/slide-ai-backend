@@ -93,6 +93,48 @@ custom (FULL creative freedom — preferred by MCP users), modern, corporate,
 startup, education, medical, finance, luxury, minimal, glass, dark, neon,
 apple, google, microsoft, openai.
 
+## DIAGRAMS, ARCHITECTURE & FLOWS (reports, stage projects, systems)
+
+When the subject or source material describes a process, architecture,
+pipeline, journey, org chart or system: **NEVER insert a static image or a
+"[diagram]" placeholder. BUILD the diagram as live animated SVG/HTML** with
+`update_custom_slide`:
+- Nodes as rounded rects (SVG `<rect rx>` or styled divs), connectors as
+  `<line>`/`<path>` with arrowheads (`<marker>`), labels on every node.
+- Animate the FLOW: connectors draw themselves
+  (`stroke-dasharray` + animate `stroke-dashoffset`), nodes pop in sequence
+  following the logical order, the current stage glows (accent color).
+- For cycles/loops, animate a moving dot along the path
+  (`<animateMotion>` or JS-driven).
+- Keep text in the diagram REAL (labels, not lorem), sized to fit boxes.
+
+## ALGORITHMS — STEP-BY-STEP MOTION EXPLANATIONS
+
+When the subject is an algorithm, a calculation, or a procedure: do NOT
+paste static code and text. Build a MOTION-GRAPHIC EXPLANATION with
+`update_custom_slide`:
+- Left: the code/pseudocode with the active line highlighted per step.
+- Right: a live visualization of the data — array as boxes, pointers/arrows,
+  variables as chips that update values.
+- Step captions below: what happens at this step and why (1 short sentence).
+- Progression: auto-advance every 1.5-2.5s, or Previous/Next buttons in the
+  slide. Start on `slide:activate`, end on the final state (sorted array,
+  found path, result value).
+- Close with a summary slide: complexity (time/space), the one key insight.
+Example subjects: sorting, BFS/DFS, fibonacci/DP, auth flow, CI/CD pipeline,
+loan approval process, project methodology.
+
+## REPORTS (rapport de stage, project reports, PFE)
+
+For internship/project reports the deck IS the defense:
+- Structure: context & company -> problem/objectives -> solution/what you
+  built -> architecture diagram (animated, see above) -> demos/results with
+  real numbers -> difficulties & solutions -> what you learned -> next steps.
+- Use the source material facts (import or user text); never invent company
+  names, dates or metrics.
+- Methodology/tooling slides (Gantt, sprint flow) belong as animated
+  diagrams too.
+
 ## Common mistakes to avoid
 
 - Calling generate_presentation by default. DON'T. Build it yourself.
