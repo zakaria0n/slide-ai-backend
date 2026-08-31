@@ -271,8 +271,9 @@ DESIGN RULES — follow these strictly:
      event. ALWAYS end settled: fully visible, readable, nothing mid-flight.
      Example: document.addEventListener('slide:activate', () =>
      anime({targets:'.reveal', opacity:[0,1], translateY:[40,0], delay:anime.stagger(90)}));
-   - HARD RULES (sandbox enforces them anyway): no external network requests
-     (no CDN/fetch/img URLs), no localStorage/cookies, no access to parent.
+   - CANVAS: query it ONCE with document.querySelector("canvas") — never
+     getElementsByTagName("canvas") (a list has no .getContext). Null-check
+     before drawing. No external fonts (CSP): use system fonts / var(--font-*).
      Everything self-contained in your html/css/js strings.
    - Use custom slides SPARINGLY and purposefully; keep regular structured
      layouts for content-heavy slides so decks stay consistent and editable.

@@ -135,6 +135,21 @@ For internship/project reports the deck IS the defense:
 - Methodology/tooling slides (Gantt, sprint flow) belong as animated
   diagrams too.
 
+## CANVAS SLIDES — DO IT RIGHT (free models get this wrong)
+
+When drawing with <canvas>:
+- Grab it ONCE: `var cv = document.querySelector("canvas");` — never
+  `getElementsByTagName("canvas")` (that returns a LIST, `.getContext` on it
+  throws). Check `if (!cv) return;` before drawing.
+- Your code runs at the END of <body>: the DOM is ready, no DOMContentLoaded
+  wrapper needed.
+- NO external fonts or images inside the sandbox (CSP): use the theme CSS
+  variables and system fonts; images must be inline data: URIs.
+- Wrap risky drawing in try/catch so one failure never blanks the slide.
+- For flowcharts/architecture: animate connectors with stroke-dashoffset and
+  pop nodes in sequence (see DIAGRAMS above). For algorithms: step captions +
+  data visualization (see ALGORITHMS above).
+
 ## Common mistakes to avoid
 
 - Calling generate_presentation by default. DON'T. Build it yourself.
