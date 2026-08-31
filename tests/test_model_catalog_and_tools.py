@@ -43,6 +43,27 @@ async def test_resolve_model_rejects_unknown(settings, cached_ids) -> None:
 # --- GET /models endpoint ----------------------------------------------------
 
 
+async def test_list_model_ids_hides_paid_models(settings, monkeypatch) -> None:
+    """Free key: only big-pickle + *-free models are exposed."""
+    monkeypatch.setattr(
+        mc, "_cache",
+        {"ids": ["claude-opus-5", "big-pickle", "hy3-free", "gpt-5"], "fetched_at": mc.time.monotonic()},
+    )
+    ids = await mc.list_model_ids(settings)
+    assert "claude-opus-5" not in ids and "gpt-5" not in ids
+    assert "big-pickle" in ids and "hy3-free" in ids
+
+
+async def test_list_model_ids_keeps_all_when_paid_allowed(settings, monkeypatch) -> None:
+    paid = Settings(_env_file=None, ai_provider_api_key="real-key", allow_paid_models=True)
+    monkeypatch.setattr(
+        mc, "_cache",
+        {"ids": ["claude-opus-5", "hy3-free"], "fetched_at": mc.time.monotonic()},
+    )
+    ids = await mc.list_model_ids(paid)
+    assert "claude-opus-5" in ids
+
+
 def test_models_endpoint_requires_auth(client) -> None:
     res = client.get("/api/v1/models")
     assert res.status_code == 401

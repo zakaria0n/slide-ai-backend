@@ -97,16 +97,33 @@ STATIC_MODELS: list[str] = [
 _CACHE_TTL_SECONDS = 300.0
 _cache: dict[str, Any] = {"ids": None, "fetched_at": 0.0}
 
+# With the shared free key, only these models actually work. Everything else
+# (paid ids) is hidden from the catalog and rejected on use — unless
+# allow_paid_models is enabled (paid key).
+_FREE_SUFFIX = "-free"
+_PUBLIC_MODEL_IDS = {"big-pickle"}
+
+
+def _is_public_model(model_id: str) -> bool:
+    return model_id.endswith(_FREE_SUFFIX) or model_id in _PUBLIC_MODEL_IDS
+
+
+def _apply_policy(settings: Settings, ids: list[str]) -> list[str]:
+    if settings.allow_paid_models:
+        return list(ids)
+    return [m for m in ids if _is_public_model(m)]
+
 
 async def list_model_ids(settings: Settings) -> list[str]:
     """Return the provider's model ids, cached for a few minutes.
 
     Falls back to the static snapshot (and then to whatever the operator
-    allowlisted) when the upstream request fails.
+    allowlisted) when the upstream request fails. The free-key policy
+    (big-pickle + *-free only) is applied on every code path.
     """
     now = time.monotonic()
     if _cache["ids"] is not None and now - _cache["fetched_at"] < _CACHE_TTL_SECONDS:
-        return list(_cache["ids"])
+        return _apply_policy(settings, list(_cache["ids"]))
 
     ids: list[str] = []
     try:
@@ -124,6 +141,10 @@ async def list_model_ids(settings: Settings) -> list[str]:
     if not ids:
         ids = list(STATIC_MODELS)
 
+    if not settings.allow_paid_models:
+        ids = [m for m in ids if _is_public_model(m)]
+    return ids
+
     # The operator allowlist, when set, narrows the catalog (it never widens
     # it — ids outside the provider catalog cannot be invoked anyway).
     allowed = settings.ai_allowed_models
@@ -133,7 +154,7 @@ async def list_model_ids(settings: Settings) -> list[str]:
 
     _cache["ids"] = list(ids)
     _cache["fetched_at"] = now
-    return list(ids)
+    return _apply_policy(settings, list(ids))
 
 
 async def list_models(settings: Settings) -> list[dict[str, str]]:

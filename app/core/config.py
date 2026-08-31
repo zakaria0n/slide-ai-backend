@@ -77,6 +77,11 @@ class Settings(BaseSettings):
         default_factory=lambda: ["http://localhost:5173"]
     )
 
+    # With the free/public provider key only free-tier models work. When
+    # False (default), the model catalog exposes ONLY big-pickle + *-free
+    # models — paid ids are hidden and rejected. Flip to True with a paid key.
+    allow_paid_models: bool = False
+
     # Where the web app lives — OAuth consent / device verification pages
     # redirect there. Empty = first CORS origin.
     frontend_origin: str = ""
