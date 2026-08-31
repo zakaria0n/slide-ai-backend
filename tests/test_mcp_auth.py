@@ -208,6 +208,8 @@ def test_skill_zip_download(client) -> None:
     zf = zipfile.ZipFile(io.BytesIO(res.content))
     names = zf.namelist()
     assert "slide-ai/SKILL.md" in names
-    skill = zf.read("slide-ai/SKILL.md").decode()
-    assert "do not delegate" in skill.lower() or "build decks yourself" in skill.lower()
+    skill = zf.read("slide-ai/SKILL.md").decode().lower()
+    assert "build decks" in skill and "yourself" in skill
+    assert "never delegate" in skill
+    assert "diagram" in skill and "algorithm" in skill
     assert "create_presentation" in skill
