@@ -330,18 +330,25 @@ async def translate_spec(
 
     resolved = await resolve_model(settings, model)
     merged: dict[str, str] = {}
+    failed_chunks = 0
     for chunk in chunks:
-        data = await complete_json(
-            settings,
-            model=resolved,
-            system=_SYSTEM,
-            user=(
-                f"Target language: {target_language}.\n"
-                f"Translate every value of this JSON object into {target_language}:\n"
-                + _json.dumps(chunk, ensure_ascii=False)
-            ),
-            max_tokens=16000,
-        )
+        try:
+            data = await complete_json(
+                settings,
+                model=resolved,
+                system=_SYSTEM,
+                user=(
+                    f"Target language: {target_language}.\n"
+                    f"Translate every value of this JSON object into {target_language}:\n"
+                    + _json.dumps(chunk, ensure_ascii=False)
+                ),
+                max_tokens=16000,
+            )
+        except ProviderError:
+            # One flaky chunk must not sink the whole deck: keep the original
+            # strings for that batch and translate the rest.
+            failed_chunks += 1
+            continue
         if isinstance(data, dict) and data:
             merged.update({str(k): str(v) for k, v in data.items()})
 
@@ -351,6 +358,13 @@ async def translate_spec(
         for slide, originals, masks, sentinel_html in html_edits:
             slide.code.html = rebuild_html(sentinel_html, originals, masks, {})
         raise ProviderError("The translation response was empty")
+    if failed_chunks:
+        import logging
+
+        logging.getLogger("generation").warning(
+            "translate: %d/%d chunk(s) failed — those strings kept their original language",
+            failed_chunks, len(chunks),
+        )
 
     clean = {str(k): str(v) for k, v in translations.items()}
     _apply_translations(spec, clean)
