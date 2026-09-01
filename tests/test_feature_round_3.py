@@ -285,6 +285,118 @@ def test_translate_endpoint(monkeypatch, client: TestClient) -> None:
     assert els[2]["items"] == ["un", "deux"]
     # Numbers/keys from the source spec were part of the payload.
     assert "0.2.items[0]" in captured["user"]
+    # The fresh optimistic-locking baseline comes back for the editor.
+    assert res.headers.get("X-Updated-At")
+
+
+def test_translate_custom_slide_html(monkeypatch) -> None:
+    """MCP/creative decks are custom-coded: their VISIBLE HTML text must
+    translate while markup, scripts and styles stay intact."""
+    import json as _json
+
+    from app.core.config import Settings
+    from app.generation.spec import PresentationSpec
+    from app.generation import translator
+
+    html = (
+        '<div class="stage"><h1 class="reveal">Big Hello</h1>'
+        '<p>Grow faster</p><img alt="A chart">'
+        '<button title="Click me">Start now</button></div>'
+        '<script>var keep = "do not touch";</script>'
+        '<style>.stage { color: red; }</style>'
+    )
+    spec = PresentationSpec.model_validate({
+        "meta": {"title": "MCP deck", "theme": "custom"},
+        "slides": [{"layout": "custom", "elements": [], "code": {"html": html, "css": "", "js": ""}}],
+    })
+
+    async def fake_complete_json(settings, *, model, system, user, max_tokens=4000):
+        payload = _json.loads(user.split(":\n", 1)[1])
+        out = {k: f"[{v}]" for k, v in payload.items()}
+        return out
+
+    monkeypatch.setattr(translator, "complete_json", fake_complete_json)
+    settings = Settings(_env_file=None, app_env="test", ai_provider_api_key="")
+    out = __import__("asyncio").run(
+        translator.translate_spec(spec, settings, target_language="Arabic")
+    )
+
+    got = out.slides[0].code.html
+    assert "[Big Hello]" in got
+    assert "[Grow faster]" in got
+    assert '[A chart]' in got          # alt attribute translated
+    assert "[Click me]" in got         # title attribute translated
+    assert "[Start now]" in got
+    assert 'var keep = "do not touch";' in got   # script untouched
+    assert ".stage { color: red; }" in got        # style untouched
+    assert "<h1" in got and 'class="reveal"' in got  # markup preserved
+    assert "\x00" not in got           # no sentinels leaked
+    assert out.meta.title == "[MCP deck]"
+    assert out.meta.language == "Arabic"
+
+
+def test_translate_missing_html_key_restores_original(monkeypatch) -> None:
+    """If the model drops a key, the original text must survive."""
+    import asyncio as _aio
+    import json as _json
+
+    from app.core.config import Settings
+    from app.generation.spec import PresentationSpec
+    from app.generation import translator
+
+    html = "<h1>Alpha</h1><p>Beta</p>"
+    spec = PresentationSpec.model_validate({
+        "meta": {"title": "T"},
+        "slides": [{"layout": "custom", "elements": [], "code": {"html": html, "css": "", "js": ""}}],
+    })
+
+    async def fake_complete_json(settings, *, model, system, user, max_tokens=4000):
+        payload = _json.loads(user.split(":\n", 1)[1])
+        # Translate only the FIRST run; drop the rest.
+        first_key = next(k for k in payload if ".run[" in k)
+        return {first_key: "TRADUIT"}
+
+    monkeypatch.setattr(translator, "complete_json", fake_complete_json)
+    settings = Settings(_env_file=None, app_env="test", ai_provider_api_key="")
+    out = _aio.run(translator.translate_spec(spec, settings, target_language="French"))
+    got = out.slides[0].code.html
+    assert "TRADUIT" in got
+    assert "Alpha" in got or "Beta" in got
+    assert "\x00" not in got
+
+
+def test_translate_chart_labels(monkeypatch) -> None:
+    import asyncio as _aio
+    import json as _json
+
+    from app.core.config import Settings
+    from app.generation.spec import PresentationSpec
+    from app.generation import translator
+
+    spec = PresentationSpec.model_validate({
+        "meta": {"title": "Charts"},
+        "slides": [{
+            "layout": "chart",
+            "elements": [{
+                "type": "chart",
+                "chart_type": "bar",
+                "labels": ["Jan", "Feb"],
+                "datasets": [{"label": "Revenue", "data": [1.0, 2.0]}],
+            }],
+        }],
+    })
+
+    async def fake_complete_json(settings, *, model, system, user, max_tokens=4000):
+        payload = _json.loads(user.split(":\n", 1)[1])
+        return {k: f"[{v}]" for k, v in payload.items()}
+
+    monkeypatch.setattr(translator, "complete_json", fake_complete_json)
+    settings = Settings(_env_file=None, app_env="test", ai_provider_api_key="")
+    out = _aio.run(translator.translate_spec(spec, settings, target_language="French"))
+    el = out.slides[0].elements[0]
+    assert el.labels == ["[Jan]", "[Feb]"]
+    assert el.datasets[0].label == "[Revenue]"
+    assert el.datasets[0].data == [1.0, 2.0]
 
 
 def test_translator_collect_and_apply() -> None:

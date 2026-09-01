@@ -276,12 +276,17 @@ async def translate_presentation(
     from app.presentations.versioning import snapshot_if_changed
 
     await snapshot_if_changed(supabase, presentation_id, owner_id, current_spec, note=f"before translate → {req.target_language}")
-    await db.update_presentation(
+    saved = await db.update_presentation(
         supabase, presentation_id,
         spec=translated.model_dump(),
         slide_count=len(translated.slides),
     )
-    return translated
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(
+        content=translated.model_dump(mode="json"),
+        headers={"X-Updated-At": str((saved or {}).get("updated_at") or "")},
+    )
 
 
 @router.get("/search", response_model=PresentationListResponse)

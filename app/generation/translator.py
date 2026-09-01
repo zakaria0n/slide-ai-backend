@@ -74,12 +74,105 @@ def _collect_texts(spec: PresentationSpec) -> dict[str, str]:
                     for c, cell in enumerate(row or []):
                         if isinstance(cell, str):
                             put(f"{i}.{j}.rows[{r}][{c}]", cell)
+            elif t == "chart":
+                # Chart categories and series names are words too; the numeric
+                # data itself is never touched.
+                for k, lbl in enumerate(el.labels or []):
+                    put(f"{i}.{j}.labels[{k}]", lbl)
+                for k, ds in enumerate(el.datasets or []):
+                    put(f"{i}.{j}.datasets[{k}].label", ds.label)
         put(f"{i}.notes", slide.notes)
 
     # Deck title last so it is part of the same single call.
     if spec.meta and spec.meta.title:
         put("meta.title", spec.meta.title)
     return texts
+
+
+# --- custom-coded slides (layout="custom") ------------------------------------
+#
+# The AI-authored HTML is real markup: translating it naively would corrupt
+# tags and JS. Strategy: mask <script>/<style> blocks, then replace every
+# TEXT RUN (between tags) and translatable ATTRIBUTE (alt/title/placeholder/
+# aria-label) with a \x00-keyed sentinel. Only the sentinels' source strings
+# enter the translation map; afterwards each sentinel is swapped back to its
+# translation (or the original when the model skipped it). JS string literals
+# are deliberately left alone — rewriting code strings risks breaking logic.
+
+import re as _re
+
+_TEXT_RUN_RE = _re.compile(r">([^<>]+)<")
+_ATTR_RE = _re.compile(r'\b(alt|title|placeholder|aria-label|content)\s*=\s*"([^"]*)"')
+_MASK_RE = _re.compile(r"(<script\b.*?</script\s*>|<style\b.*?</style\s*>|<!--.*?-->)", _re.IGNORECASE | _re.DOTALL)
+_RUN_RE = _re.compile(r"\x00R(\d+)\x00")
+_MASK_KEY = "\x00M{}\x00"
+
+
+def _has_words(s: str) -> bool:
+    return any(ch.isalpha() for ch in s)
+
+
+def extract_html_texts(html: str, prefix: str) -> tuple[str, dict[str, str], dict[str, str], dict[str, str]]:
+    """Return (sentinel_html, texts, originals, masks).
+
+    ``texts`` maps stable ids ("0.html.run[3]") to the source strings that must
+    be translated; ``originals`` maps the same ids back to their source so a
+    missing translation can be restored verbatim.
+    """
+    masks: dict[str, str] = {}
+
+    def mask(m: "_re.Match") -> str:
+        key = _MASK_KEY.format(len(masks))
+        masks[key] = m.group(1)
+        return key
+
+    html = _MASK_RE.sub(mask, html)
+
+    texts: dict[str, str] = {}
+    originals: dict[str, str] = {}
+
+    def sentinel(key: str) -> str:
+        return f"\x00{key}\x00"
+
+    def sub_run(m: "_re.Match") -> str:
+        inner = m.group(1)
+        s = inner.strip()
+        if not s or not _has_words(s):
+            return m.group(0)
+        key = f"{prefix}.run[{len(texts)}]"
+        texts[key] = s
+        originals[key] = inner
+        return ">" + sentinel(key) + "<"
+
+    def sub_attr(m: "_re.Match") -> str:
+        val = m.group(2)
+        s = val.strip()
+        if not s or not _has_words(s):
+            return m.group(0)
+        key = f"{prefix}.attr[{len(texts)}]"
+        texts[key] = s
+        originals[key] = val
+        return f'{m.group(1)}="{sentinel(key)}"'
+
+    html = _TEXT_RUN_RE.sub(sub_run, html)
+    html = _ATTR_RE.sub(sub_attr, html)
+    return html, texts, originals, masks
+
+
+def rebuild_html(
+    sentinel_html: str,
+    originals: dict[str, str],
+    masks: dict[str, str],
+    translations: dict[str, str],
+) -> str:
+    """Swap sentinels back to translations (originals when untranslated)."""
+    html = sentinel_html
+    for key, original in originals.items():
+        replacement = str(translations.get(key) or "").strip()
+        html = html.replace(f"\x00{key}\x00", replacement or original)
+    for mask_key, masked in masks.items():
+        html = html.replace(mask_key, masked)
+    return html
 
 
 def _apply_translations(spec: PresentationSpec, translations: dict[str, str]) -> None:
@@ -146,6 +239,15 @@ def _apply_translations(spec: PresentationSpec, translations: dict[str, str]) ->
                             new = translations.get(f"{i}.{j}.rows[{r}][{c}]")
                             if new:
                                 row[c] = new
+            elif t == "chart":
+                for k in range(len(el.labels or [])):
+                    new = translations.get(f"{i}.{j}.labels[{k}]")
+                    if new:
+                        el.labels[k] = new
+                for k, ds in enumerate(el.datasets or []):
+                    new = translations.get(f"{i}.{j}.datasets[{k}].label")
+                    if new:
+                        ds.label = new
         new = translations.get(f"{i}.notes")
         if new:
             slide.notes = new
@@ -163,9 +265,30 @@ async def translate_spec(
     target_language: str,
     model: str | None = None,
 ) -> PresentationSpec:
-    """Return the spec with every text translated into ``target_language``."""
+    """Return the spec with every text translated into ``target_language``.
+
+    Covers structured elements, speaker notes, chart labels/series names AND
+    the visible text inside custom-coded slides (layout="custom") — their
+    HTML markup is preserved via sentinel extraction, scripts/styles untouched.
+    """
     texts = _collect_texts(spec)
+
+    # Custom-coded slides: extract their visible text into the same payload.
+    html_edits: list[tuple[object, str, dict[str, str], dict[str, str]]] = []
+    for i, slide in enumerate(spec.slides):
+        if slide.layout == "custom" and slide.code and slide.code.html:
+            sentinel_html, html_texts, originals, masks = extract_html_texts(
+                slide.code.html, f"{i}.html"
+            )
+            if html_texts:
+                texts.update(html_texts)
+                slide.code.html = sentinel_html
+                html_edits.append((slide, originals, masks, sentinel_html))
+
     if not texts:
+        # Un-mask any custom HTML before bailing out.
+        for slide, originals, masks, sentinel_html in html_edits:
+            slide.code.html = rebuild_html(sentinel_html, originals, masks, {})
         return spec
 
     # Budget guard: drop extra strings beyond the char budget (rare).
@@ -193,8 +316,15 @@ async def translate_spec(
     )
     translations = data if isinstance(data, dict) else {}
     if not translations:
+        # Un-mask custom HTML before failing — never persist sentinels.
+        for slide, originals, masks, sentinel_html in html_edits:
+            slide.code.html = rebuild_html(sentinel_html, originals, masks, {})
         raise ProviderError("The translation response was empty")
-    _apply_translations(spec, {str(k): str(v) for k, v in translations.items()})
+
+    clean = {str(k): str(v) for k, v in translations.items()}
+    _apply_translations(spec, clean)
+    for slide, originals, masks, sentinel_html in html_edits:
+        slide.code.html = rebuild_html(sentinel_html, originals, masks, clean)
     if spec.meta:
         spec.meta.language = target_language
     return spec
