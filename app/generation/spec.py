@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Union
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import AliasChoices, BaseModel, Field, ValidationError, field_validator
 
 # --- Element union ---------------------------------------------------------
 
@@ -96,10 +96,15 @@ class _BaseElement(BaseModel):
     """Shared element fields."""
 
     id: str | None = None
+    # The frontend speaks camelCase (animationDelay); accept both spellings so
+    # client-authored specs never silently drop data.
     animation: str | None = Field(default=None, max_length=40)
     # Extra delay (ms) before this element's entrance animation starts,
     # on top of the automatic stagger.
-    animation_delay: int | None = Field(default=None, ge=0, le=10000)
+    animation_delay: int | None = Field(
+        default=None, ge=0, le=10000,
+        validation_alias=AliasChoices("animation_delay", "animationDelay"),
+    )
     # Per-element style overrides.
     style: ElementStyle | None = None
     # Free (Canvas-style) placement, in percent of the slide size. When set,
@@ -143,18 +148,27 @@ class ImageElement(_BaseElement):
     # Stable reference to a file_assets row. Signed URLs expire — when this
     # is set, renderers/exports resolve a FRESH src from the file id instead
     # of trusting the possibly-expired src.
-    file_id: str | None = Field(default=None, max_length=80)
+    file_id: str | None = Field(
+        default=None, max_length=80,
+        validation_alias=AliasChoices("file_id", "fileId"),
+    )
     alt: str = ""
     caption: str | None = None
     # Light image controls: horizontal mirror + CSS object-position.
     flip: bool = False
-    object_position: str | None = Field(default=None, max_length=40)
+    object_position: str | None = Field(
+        default=None, max_length=40,
+        validation_alias=AliasChoices("object_position", "objectPosition"),
+    )
 
 
 class VideoElement(_BaseElement):
     type: Literal["video"] = "video"
     src: str | None = None
-    file_id: str | None = Field(default=None, max_length=80)
+    file_id: str | None = Field(
+        default=None, max_length=80,
+        validation_alias=AliasChoices("file_id", "fileId"),
+    )
     alt: str = ""
     poster: str | None = None
     # Start playing automatically when the slide becomes active (muted).
@@ -164,7 +178,10 @@ class VideoElement(_BaseElement):
 class AudioElement(_BaseElement):
     type: Literal["audio"] = "audio"
     src: str | None = None
-    file_id: str | None = Field(default=None, max_length=80)
+    file_id: str | None = Field(
+        default=None, max_length=80,
+        validation_alias=AliasChoices("file_id", "fileId"),
+    )
     alt: str = ""
 
 
@@ -265,7 +282,10 @@ class ChartElement(_BaseElement):
     PowerPoint chart in the PPTX export (not a picture, not a text block)."""
 
     type: Literal["chart"] = "chart"
-    chart_type: Literal["bar", "line", "pie", "doughnut", "radar"] = "bar"
+    chart_type: Literal["bar", "line", "pie", "doughnut", "radar"] = Field(
+        default="bar",
+        validation_alias=AliasChoices("chart_type", "chartType"),
+    )
     labels: list[str] = Field(default_factory=list, max_length=24)
     datasets: list[ChartDataset] = Field(default_factory=list, max_length=6)
 
@@ -329,6 +349,10 @@ class PresentationMeta(BaseModel):
     # dropped silently and the element falls back to a built-in animation.
     # Kept camelCase to match the frontend spec shape exactly.
     customAnimations: list["CustomAnimationDef"] | None = None
+    # Full renderer token set for a USER-SAVED theme (colors, fonts, ambient).
+    # Stored verbatim on the deck so any viewer/renderer/export can re-skin it
+    # without a themes lookup. camelCase to match the frontend meta shape.
+    themeTokens: dict | None = None
 
 
 class CustomAnimationDef(BaseModel):

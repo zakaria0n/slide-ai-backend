@@ -35,3 +35,6 @@ class GenerationRequest(BaseModel):
     # Approved outline (outline-first flow): the deck MUST follow it — one
     # slide per entry, in order.
     outline: list[OutlineItem] | None = Field(default=None, max_length=30)
+    # Full renderer tokens for a user-saved theme — stamped onto the
+    # generated spec's meta so the deck carries its own skin.
+    theme_tokens: dict | None = Field(default=None)

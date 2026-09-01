@@ -70,6 +70,10 @@ class GenerationService:
         # 3. Generate the structured specification from the provider.
         try:
             spec = await self._provider.generate_spec(request)
+            # Stamp user-theme tokens onto the deck so it renders with the
+            # saved skin everywhere (editor, share, export).
+            if request.theme_tokens and spec.meta is not None:
+                spec.meta.themeTokens = request.theme_tokens
         except (ProviderError, ValidationError):
             # Includes an invalid model selection — never leave a stuck
             # "generating" deck behind.
