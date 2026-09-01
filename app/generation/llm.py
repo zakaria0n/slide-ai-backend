@@ -75,13 +75,26 @@ async def complete_json(
             if resp.status_code != 200:
                 raise ProviderError(f"{DISPLAYED_PROVIDER} returned an error")
             try:
-                content = resp.json()["choices"][0]["message"]["content"]
-            except (KeyError, IndexError, ValueError) as exc:
+                body = resp.json()
+                choices = body.get("choices") or []
+                message = (choices[0].get("message") or {}) if choices else {}
+                content = message.get("content")
+            except (ValueError, AttributeError, IndexError, TypeError) as exc:
+                # Non-JSON body or unexpected shape — worth one more attempt.
+                if attempt < _MAX_RETRIES:
+                    await asyncio.sleep(_BACKOFF_S[min(attempt, len(_BACKOFF_S) - 1)])
+                    continue
                 raise ProviderError("The response was malformed") from exc
             if not content or not str(content).strip():
+                # Free reasoning models sometimes spend the whole completion
+                # budget on reasoning_content and answer with an empty/absent
+                # content field. Treat as transient and retry.
                 if attempt < _MAX_RETRIES:
+                    await asyncio.sleep(_BACKOFF_S[min(attempt, len(_BACKOFF_S) - 1)])
                     continue
-                raise ProviderError("The model returned an empty response")
+                raise ProviderError(
+                    f"{DISPLAYED_PROVIDER} returned an empty response — please try again"
+                )
             try:
                 return json.loads(_strip_fences(str(content)))
             except json.JSONDecodeError as exc:

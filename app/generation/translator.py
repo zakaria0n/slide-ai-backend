@@ -300,21 +300,42 @@ async def translate_spec(
         payload[key] = value
         used += len(value)
 
-    resolved = await resolve_model(settings, model)
+    # Translate in CHUNKS: one giant request forces the model to reproduce
+    # every key in a single JSON answer, which reasoning models truncate or
+    # answer without content. Small batches keep each response small and
+    # reliable.
     import json as _json
 
-    data = await complete_json(
-        settings,
-        model=resolved,
-        system=_SYSTEM,
-        user=(
-            f"Target language: {target_language}.\n"
-            f"Translate every value of this JSON object into {target_language}:\n"
-            + _json.dumps(payload, ensure_ascii=False)
-        ),
-        max_tokens=16000,
-    )
-    translations = data if isinstance(data, dict) else {}
+    chunks: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+    current_chars = 0
+    for key, value in payload.items():
+        if current and (len(current) >= 80 or current_chars + len(value) > 6000):
+            chunks.append(current)
+            current = {}
+            current_chars = 0
+        current[key] = value
+        current_chars += len(value)
+    if current:
+        chunks.append(current)
+
+    resolved = await resolve_model(settings, model)
+    translations: dict[str, str] = {}
+    for chunk in chunks:
+        data = await complete_json(
+            settings,
+            model=resolved,
+            system=_SYSTEM,
+            user=(
+                f"Target language: {target_language}.\n"
+                f"Translate every value of this JSON object into {target_language}:\n"
+                + _json.dumps(chunk, ensure_ascii=False)
+            ),
+            max_tokens=16000,
+        )
+        if isinstance(data, dict) and data:
+            translations.update({str(k): str(v) for k, v in data.items()})
+
     if not translations:
         # Un-mask custom HTML before failing — never persist sentinels.
         for slide, originals, masks, sentinel_html in html_edits:
