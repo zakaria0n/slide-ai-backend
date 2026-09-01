@@ -49,6 +49,8 @@ class ShareResponse(BaseModel):
     expires_at: str | None = None
     created_at: str
     view_count: int = 0
+    # Seconds spent per slide by shared viewers: {"0": 12, "1": 8}
+    slide_time_json: dict | None = None
     comments: list[dict] = []
 
 
@@ -160,6 +162,7 @@ async def list_shares_with_stats(
             expires_at=s_row.get("expires_at"),
             created_at=s_row["created_at"],
             view_count=int(s_row.get("view_count") or 0),
+            slide_time_json=s_row.get("slide_time_json"),
             comments=comments,
         ))
 
@@ -253,8 +256,10 @@ async def post_share_slide_time(
             continue
     try:
         await supabase.table("presentation_shares").update({"slide_time_json": cleaned}).eq("token", token).execute()
-    except Exception:
-        pass
+    except Exception as _exc:
+        import logging
+
+        logging.getLogger("sharing").warning("slide_time update failed: %s", _exc)
     return Response(status_code=204)
 
 
