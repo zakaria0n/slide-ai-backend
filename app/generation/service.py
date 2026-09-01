@@ -58,7 +58,9 @@ class GenerationService:
 
         # 2. Resolve a template when the caller didn't pick one, so the
         # keyword-based classifier still guides the deck structure.
-        if not request.template_name:
+        # Custom mode opts OUT: the template hint would fight the
+        # free-creation directive.
+        if not request.template_name and request.theme != "custom":
             from app.templates.selector import select_template
 
             family = select_template(request.prompt)

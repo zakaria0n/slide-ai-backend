@@ -47,6 +47,23 @@ def _spec_quality_feedback(spec) -> list[str]:
     the retry prompt.
     """
     issues: list[str] = []
+
+    # Custom creative mode compliance.
+    if getattr(spec.meta, "theme", None) == "custom":
+        total = len(spec.slides)
+        custom_slides = sum(1 for sl in spec.slides if getattr(sl, "layout", "") == "custom")
+        if total >= 3 and custom_slides == 0:
+            issues.append(
+                "THEME 'custom' but ZERO custom-coded slides - author most slides "
+                "as layout='custom' with your own HTML/CSS/JS"
+            )
+        anims = getattr(spec.meta, "customAnimations", None) or []
+        if len(anims) < 2:
+            issues.append(
+                "THEME 'custom': define at least 2 custom keyframe animations "
+                "and APPLY them to elements"
+            )
+
     generic_titles = {"untitled", "overview", "introduction", "conclusion", "content", "agenda"}
     for i, slide in enumerate(spec.slides):
         layout = slide.layout
@@ -541,7 +558,7 @@ class OnlineSpecProvider(SpecProvider):
                 if request.theme == "custom":
                     system = _CUSTOM_MODE_PROMPT + "\n\n" + system
                 template = get_template(request.template_name)
-                if template is not None:
+                if template is not None and request.theme != "custom":
                     layouts_hint = ", ".join(s.layout for s in template.slides)
                     purposes_hint = "; ".join(s.purpose for s in template.slides)
                     system = (
@@ -918,20 +935,27 @@ def build_spec_provider(settings: Settings) -> SpecProvider:
 
 
 _CUSTOM_MODE_PROMPT = """
-CUSTOM CREATIVE MODE (theme = 'custom') - FULL CREATIVE FREEDOM:
-The user picked the 'custom' theme: you are NOT limited to the standard
-layout catalog or the preset animation names.
-- Author MOST slides as layout="custom" with your own self-contained
-  HTML/CSS/JS (rule 10): invent any layout, composition, typography, or
-  artwork (canvas, SVG, particles, WebGL). The structured element layouts
-  are optional tools, not obligations.
-- Author your OWN keyframe animations (meta.customAnimations) for every
-  motion; you may ignore the built-in animation names entirely. Any CSS
-  property is allowed.
-- The ONLY hard requirements: EXACTLY the requested number of slides,
-  content deeply specific to the topic, and every custom slide ends fully
-  visible and settled on 'slide:activate'.
-- Use structured layouts only where they genuinely serve clarity.
+CUSTOM CREATIVE MODE (theme = 'custom') - FULL CREATIVE FREEDOM.
+This is NOT a normal deck build. The user explicitly wants a unique,
+designed, animated deck - the standard template catalog does NOT apply.
+
+HARD REQUIREMENTS (violations fail the build):
+- AT LEAST (slide_count - 2) slides MUST be layout="custom" with real,
+  self-contained HTML/CSS/JS you author yourself (rule 10). Every custom
+  slide must have a DIFFERENT composition (no copy-paste between slides).
+- meta.customAnimations MUST contain at least 2 named keyframe animations
+  you authored, APPLIED to elements/slides (a defined-but-never-applied
+  animation does not count).
+- Content stays deeply specific to the topic; EXACTLY the requested
+  number of slides; every custom slide ends fully visible on
+  'slide:activate'.
+
+DESIGN DIRECTION:
+- Invent one visual identity and vary it per slide: split-screens,
+  full-bleed canvas art, kinetic typography, drawn SVG diagrams, animated
+  counters, particles.
+- Use the theme colors (window.__THEME__ / CSS vars) coherently.
+- Structured layouts are allowed only as accents; never default to them.
 """
 
 _SYSTEM_PROMPT = (
