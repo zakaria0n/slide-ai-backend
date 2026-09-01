@@ -627,6 +627,46 @@ async def upsert_brand_kit(client: AsyncClient, user_id: UUID, **fields: Any) ->
     return rows[0] if rows else {}
 
 
+async def list_user_themes(client: AsyncClient, user_id: UUID) -> list[dict]:
+    resp = (
+        await client.table("user_themes")
+        .select("*")
+        .eq("user_id", str(user_id))
+        .order("created_at", desc=False)
+        .execute()
+    )
+    return resp.data or []
+
+
+async def get_user_theme(client: AsyncClient, theme_id: UUID, user_id: UUID) -> dict | None:
+    resp = (
+        await client.table("user_themes")
+        .select("*")
+        .eq("id", str(theme_id))
+        .eq("user_id", str(user_id))
+        .limit(1)
+        .execute()
+    )
+    rows: list[dict] = resp.data
+    return rows[0] if rows else None
+
+
+async def create_user_theme(client: AsyncClient, **fields: Any) -> dict:
+    resp = await client.table("user_themes").insert(fields).execute()
+    rows: list[dict] = resp.data
+    return rows[0] if rows else {}
+
+
+async def delete_user_theme(client: AsyncClient, theme_id: UUID, user_id: UUID) -> None:
+    await (
+        client.table("user_themes")
+        .delete()
+        .eq("id", str(theme_id))
+        .eq("user_id", str(user_id))
+        .execute()
+    )
+
+
 async def create_mcp_job(client: AsyncClient, *, id: str, user_id: str, status: str) -> dict:
     resp = (
         await client.table("mcp_jobs")

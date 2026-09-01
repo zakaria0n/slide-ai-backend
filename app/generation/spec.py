@@ -72,6 +72,7 @@ ElementType = Literal[
     "table",
     "diagram",
     "icon",
+    "chart",
 ]
 
 
@@ -110,6 +111,9 @@ class _BaseElement(BaseModel):
     w: float | None = Field(default=None, ge=1, le=100)
     # Fixed height in percent of the slide height (shapes / media).
     h: float | None = Field(default=None, ge=1, le=100)
+    # Editing lock — a locked element can't be moved/resized/deleted in the
+    # editor until unlocked. Purely an authoring concern; renderers ignore it.
+    locked: bool = False
 
 
 class TitleElement(_BaseElement):
@@ -249,6 +253,23 @@ class IconElement(_BaseElement):
     label: str | None = None
 
 
+class ChartDataset(BaseModel):
+    """One data series of a chart element."""
+
+    label: str = ""
+    data: list[float] = Field(default_factory=list)
+
+
+class ChartElement(_BaseElement):
+    """Native data chart — real Chart.js on the frontend and a REAL editable
+    PowerPoint chart in the PPTX export (not a picture, not a text block)."""
+
+    type: Literal["chart"] = "chart"
+    chart_type: Literal["bar", "line", "pie", "doughnut", "radar"] = "bar"
+    labels: list[str] = Field(default_factory=list, max_length=24)
+    datasets: list[ChartDataset] = Field(default_factory=list, max_length=6)
+
+
 Element = Union[
     TitleElement,
     SubtitleElement,
@@ -267,6 +288,7 @@ Element = Union[
     VideoElement,
     AudioElement,
     ShapeElement,
+    ChartElement,
 ]
 
 

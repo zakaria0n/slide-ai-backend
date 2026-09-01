@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from supabase import AsyncClient
@@ -164,6 +164,124 @@ async def generate_presentation(
 
 # ── search & import (declared BEFORE /{presentation_id} so /search is not
 #    captured by the dynamic UUID route) ──────────────────────────────────────
+
+
+class OutlineRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=4000)
+    slide_count: int = Field(default=10, ge=1, le=30)
+    language: str = Field(default="English", max_length=40)
+    tone: str = Field(default="Professional", max_length=40)
+    model: str | None = Field(default=None, max_length=80)
+
+
+class OutlineResponse(BaseModel):
+    outline: list[dict]
+
+
+@router.post("/outline", response_model=OutlineResponse)
+async def generate_outline_endpoint(
+    req: OutlineRequest,
+    request: Request,
+    owner_id: UUID = Depends(_owner_id),
+) -> OutlineResponse:
+    """Outline-first flow: propose a slide plan WITHOUT generating the deck.
+
+    The caller reviews/edits/reorders the plan, then passes it back via
+    ``GenerationRequest.outline`` on /generate.
+    """
+    from app.core.ratelimit import generation_limiter
+    from app.generation.outliner import generate_outline
+
+    generation_limiter.check(str(owner_id))
+    settings: Settings = request.app.state.settings
+    items = await generate_outline(
+        settings,
+        prompt=req.prompt,
+        slide_count=req.slide_count,
+        language=req.language,
+        tone=req.tone,
+        model=req.model,
+    )
+    return OutlineResponse(outline=[item.model_dump() for item in items])
+
+
+@router.post("/import/pptx", response_model=PresentationResponse, status_code=201)
+async def import_pptx_file(
+    request: Request,
+    file: UploadFile,
+    owner_id: UUID = Depends(_owner_id),
+    supabase: AsyncClient = Depends(_supabase),
+    service: PresentationService = Depends(_service),
+) -> PresentationResponse:
+    """Import an existing .pptx into an editable deck (no AI rewriting).
+
+    Text becomes editable elements at their original positions, tables and
+    native charts become structured elements, speaker notes are kept.
+    """
+    from app.presentations.pptx_import import import_pptx_to_spec
+
+    name = file.filename or "imported.pptx"
+    if not name.lower().endswith(".pptx"):
+        raise ValidationError("Only .pptx files are supported")
+    data = await file.read()
+    if len(data) > 20_000_000:
+        raise ValidationError("File too large (max 20 MB)")
+
+    spec = import_pptx_to_spec(data, title=name.rsplit(".", 1)[0][:200])
+    created = await service.create(owner_id, title=spec.meta.title, theme=spec.meta.theme)
+    await db.update_presentation(
+        supabase, UUID(created.id),
+        spec=spec.model_dump(),
+        slide_count=len(spec.slides),
+        status="ready",
+    )
+    row = await db.get_presentation(supabase, UUID(created.id))
+    from app.presentations.service import _to_entity
+
+    return PresentationResponse.from_entity(_to_entity(row or {}))
+
+
+class TranslateRequest(BaseModel):
+    target_language: str = Field(min_length=1, max_length=40)
+    model: str | None = Field(default=None, max_length=80)
+
+
+@router.post("/{presentation_id}/translate", response_model=PresentationSpec)
+async def translate_presentation(
+    presentation_id: UUID,
+    req: TranslateRequest,
+    request: Request,
+    owner_id: UUID = Depends(_owner_id),
+    supabase: AsyncClient = Depends(_supabase),
+) -> PresentationSpec:
+    """Translate every text in the deck into ``target_language`` (one call)."""
+    from app.core.ratelimit import generation_limiter
+    from app.generation.translator import translate_spec
+
+    generation_limiter.check(str(owner_id))
+
+    row = await _require_presentation(supabase, presentation_id, owner_id, write=True)
+    if not row.get("spec"):
+        raise NotFoundError("Presentation specification not found")
+    current_spec = PresentationSpec.model_validate(row["spec"])
+
+    settings: Settings = request.app.state.settings
+    translated = await translate_spec(
+        current_spec.model_copy(deep=True),
+        settings,
+        target_language=req.target_language,
+        model=req.model,
+    )
+
+    from app.presentations.versioning import snapshot_if_changed
+
+    await snapshot_if_changed(supabase, presentation_id, owner_id, current_spec, note=f"before translate → {req.target_language}")
+    await db.update_presentation(
+        supabase, presentation_id,
+        spec=translated.model_dump(),
+        slide_count=len(translated.slides),
+    )
+    return translated
 
 
 @router.get("/search", response_model=PresentationListResponse)

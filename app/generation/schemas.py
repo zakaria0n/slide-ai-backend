@@ -11,6 +11,13 @@ _LANG_MAX = 40
 _PROMPT_MAX = 4000
 
 
+class OutlineItem(BaseModel):
+    """One approved slide from the outline-first flow."""
+
+    title: str = Field(min_length=1, max_length=300)
+    points: list[str] = Field(default_factory=list, max_length=12)
+
+
 class GenerationRequest(BaseModel):
     """What the user asked the generator to produce."""
 
@@ -25,3 +32,6 @@ class GenerationRequest(BaseModel):
     # Optional source material (markdown / extracted web page text) the deck
     # must be based on — used by the import endpoint.
     source_content: str | None = Field(default=None, max_length=20000)
+    # Approved outline (outline-first flow): the deck MUST follow it — one
+    # slide per entry, in order.
+    outline: list[OutlineItem] | None = Field(default=None, max_length=30)

@@ -48,6 +48,47 @@ def _add_text(tf, text: str, size: int, color: RGBColor, bold: bool = False, ita
     return p
 
 
+def _add_native_chart(ppt_slide, el: dict, x, y, w, h):
+    """Insert a REAL, editable PowerPoint chart from a chart element.
+
+    ``add_chart`` produces a native chart object the user can restyle and
+    re-data inside PowerPoint — far better than a text block or screenshot.
+    """
+    from pptx.chart.data import CategoryChartData
+    from pptx.enum.chart import XL_CHART_TYPE
+
+    kind_map = {
+        "bar": XL_CHART_TYPE.COLUMN_CLUSTERED,
+        "line": XL_CHART_TYPE.LINE_MARKERS,
+        "pie": XL_CHART_TYPE.PIE,
+        "doughnut": XL_CHART_TYPE.DOUGHNUT,
+        "radar": XL_CHART_TYPE.RADAR,
+    }
+    chart_type = kind_map.get(str(el.get("chart_type") or "bar"), XL_CHART_TYPE.COLUMN_CLUSTERED)
+    datasets = el.get("datasets") or []
+    if not datasets:
+        return None
+    data = CategoryChartData()
+    data.categories = [str(lbl) for lbl in (el.get("labels") or [])]
+    added = 0
+    for ds in datasets:
+        if isinstance(ds, dict):
+            values = []
+            for v in (ds.get("data") or []):
+                try:
+                    values.append(float(v))
+                except (TypeError, ValueError):
+                    values.append(0.0)
+            data.add_series(str(ds.get("label") or "Series"), values)
+            added += 1
+    if not added:
+        return None
+    chart = ppt_slide.shapes.add_chart(chart_type, x, y, w, h, data).chart
+    chart.has_title = False
+    chart.has_legend = chart_type in (XL_CHART_TYPE.PIE, XL_CHART_TYPE.DOUGHNUT) or added > 1
+    return chart
+
+
 async def _export_pptx(spec: PresentationSpec, t: ThemeTokens) -> bytes:
     prs = PptxPresentation()
     prs.slide_width = Emu(13_333_333)  # 16:9
@@ -153,6 +194,11 @@ async def _export_pptx(spec: PresentationSpec, t: ThemeTokens) -> bytes:
                 shape_obj.fill.solid()
                 shape_obj.fill.fore_color.rgb = fill
                 shape_obj.line.fill.background()
+            elif etype == "chart":
+                try:
+                    _add_native_chart(ppt_slide, el, x, y, w, h)
+                except Exception:
+                    pass  # malformed chart data must not fail the whole export
 
         # Table
         for el in g.get("table", []):
@@ -181,6 +227,16 @@ async def _export_pptx(spec: PresentationSpec, t: ThemeTokens) -> bytes:
                         for paragraph in cell.text_frame.paragraphs:
                             paragraph.font.size = Pt(14)
                             paragraph.font.color.rgb = text_c
+
+        # Chart (structured layout) — native editable PowerPoint chart.
+        for el in g.get("chart", []):
+            try:
+                _add_native_chart(
+                    ppt_slide, el,
+                    Emu(1_500_000), Emu(2_000_000), Emu(10_300_000), Emu(4_500_000),
+                )
+            except Exception:
+                pass
 
         # Timeline
         for el in g.get("timeline", []):

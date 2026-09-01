@@ -161,7 +161,8 @@ Return ONLY valid JSON (no markdown fences, no commentary) with this exact shape
         {"type": "timeline", "items": [{"year": "...", "text": "..."}]},
         {"type": "comparison", "left": {"title": "...", "points": ["..."]}, "right": {"title": "...", "points": ["..."]}},
         {"type": "table", "headers": ["..."], "rows": [["..."]]},
-        {"type": "code", "language": "...", "code": "..."}
+        {"type": "code", "language": "...", "code": "..."},
+        {"type": "chart", "chart_type": "bar", "labels": ["Jan", "Feb", "Mar"], "datasets": [{"label": "Revenue", "data": [12, 18, 25]}]}
       ]
     }
   ]
@@ -227,7 +228,8 @@ DESIGN RULES — follow these strictly:
    - swot: strengths/weaknesses/opportunities/threats analysis
    - table: structured data comparison
    - pricing: pricing tiers
-   - chart: bar-chart style data visualization (uses statistics element)
+   - chart: REAL data visualization — use the native chart element
+     ({"type":"chart", ...}) with clean numeric data; fallback: statistics
    - cta: call-to-action slides
    - agenda: overview of what will be covered
    - NEVER use the same layout more than twice in a row.
@@ -550,6 +552,19 @@ class OnlineSpecProvider(SpecProvider):
                 "\n\nSOURCE MATERIAL — base the deck's facts, structure and wording on "
                 "the material below (stay faithful to it, do not invent contradicting data):\n"
                 f"<source>\n{material}\n</source>"
+            )
+        if request.outline:
+            entries = "\n".join(
+                f"{idx + 1}. {item.title}"
+                + (f" — points: {'; '.join(item.points)}" if item.points else "")
+                for idx, item in enumerate(request.outline)
+            )
+            user_prompt += (
+                "\n\nAPPROVED OUTLINE (HIGHEST PRIORITY) — the user reviewed and approved this "
+                "exact slide plan. Create EXACTLY one slide per entry, in this order. Slide N's "
+                "title = entry N's title; develop its points into full elements. Do NOT add, "
+                f"drop, merge or reorder slides. The deck has exactly {len(request.outline)} slides:\n"
+                f"{entries}"
             )
         last_error: Exception | None = None
         quality_issues: list[str] = []
