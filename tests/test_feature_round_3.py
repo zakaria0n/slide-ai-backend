@@ -3,6 +3,7 @@ translation and user themes."""
 from __future__ import annotations
 
 import io
+import json
 import uuid
 
 import jwt
@@ -255,16 +256,12 @@ def _seed_spec(client: TestClient, uid: str) -> str:
 
 def test_translate_endpoint(monkeypatch, client: TestClient) -> None:
     captured = {}
+    FR = {"Hello": "Bonjour", "Welcome": "Bienvenue", "This is a deck": "Ceci est un deck", "one": "un", "two": "deux"}
 
     async def fake_complete_json(settings, *, model, system, user, max_tokens=4000):
         captured["user"] = user
-        return {
-            "meta.title": "Bonjour",
-            "0.0.text": "Bienvenue",
-            "0.1.text": "Ceci est un deck",
-            "0.2.items[0]": "un",
-            "0.2.items[1]": "deux",
-        }
+        payload = json.loads(user.split(":\n", 1)[1])
+        return {k: FR.get(v, v) for k, v in payload.items()}
 
     monkeypatch.setattr("app.generation.translator.complete_json", fake_complete_json)
     uid = str(uuid.uuid4())
@@ -283,8 +280,8 @@ def test_translate_endpoint(monkeypatch, client: TestClient) -> None:
     assert els[0]["text"] == "Bienvenue"
     assert els[1]["text"] == "Ceci est un deck"
     assert els[2]["items"] == ["un", "deux"]
-    # Numbers/keys from the source spec were part of the payload.
-    assert "0.2.items[0]" in captured["user"]
+    # Source strings were part of the (flat-id) payload.
+    assert '"two"' in captured["user"]
     # The fresh optimistic-locking baseline comes back for the editor.
     assert res.headers.get("X-Updated-At")
 
@@ -352,9 +349,8 @@ def test_translate_missing_html_key_restores_original(monkeypatch) -> None:
 
     async def fake_complete_json(settings, *, model, system, user, max_tokens=4000):
         payload = _json.loads(user.split(":\n", 1)[1])
-        # Translate only the FIRST run; drop the rest.
-        first_key = next(k for k in payload if ".run[" in k)
-        return {first_key: "TRADUIT"}
+        # Translate only ONE run; drop the rest — originals must survive.
+        return {k: ("TRADUIT" if v == "Alpha" else v) for k, v in payload.items()}
 
     monkeypatch.setattr(translator, "complete_json", fake_complete_json)
     settings = Settings(_env_file=None, app_env="test", ai_provider_api_key="")

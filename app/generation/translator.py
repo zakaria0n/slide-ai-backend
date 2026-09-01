@@ -18,14 +18,16 @@ _MAX_TEXT_CHARS = 24000
 
 _SYSTEM = """\
 You are a professional presentation translator. You receive a JSON object
-mapping numeric ids to source strings. Return ONLY valid JSON with the SAME
-numeric ids mapping to the strings translated into the target language.
+whose keys are OPAQUE IDS (like "k0", "k17") and whose values are source
+strings. Return ONLY valid JSON with the SAME ids mapping to the strings
+translated into the target language.
 Rules:
+- Copy every id EXACTLY as given — never rename, merge, drop or reorder ids.
 - Translate meaning, not word-for-word; keep the presentation tone.
 - Keep numbers, %, currency symbols and proper nouns intact.
 - Keep it SHORT — these strings go on slides. Never make a translation
   much longer than the source.
-- Never merge, drop or reorder entries. Every id must appear exactly once.
+- Every id must appear exactly once in your answer.
 - Do not translate code snippets, URLs or file paths — return them unchanged.
 """
 
@@ -300,27 +302,34 @@ async def translate_spec(
         payload[key] = value
         used += len(value)
 
-    # Translate in CHUNKS: one giant request forces the model to reproduce
-    # every key in a single JSON answer, which reasoning models truncate or
-    # answer without content. Small batches keep each response small and
-    # reliable.
+    # Translate in CHUNKS with OPAQUE FLAT IDS ("k0", "k1", …). Dotted /
+    # bracketed keys ("meta.title", "3.html.run[2]") made reasoning models
+    # emit broken JSON (they try to nest or quote the dots). The model only
+    # ever sees k-ids; the real spec paths stay in a local key_map.
     import json as _json
+
+    flat_payload: dict[str, str] = {}
+    key_map: dict[str, str] = {}
+    for real_key, value in payload.items():
+        fid = f"k{len(key_map)}"
+        flat_payload[fid] = value
+        key_map[fid] = real_key
 
     chunks: list[dict[str, str]] = []
     current: dict[str, str] = {}
     current_chars = 0
-    for key, value in payload.items():
+    for fid, value in flat_payload.items():
         if current and (len(current) >= 80 or current_chars + len(value) > 6000):
             chunks.append(current)
             current = {}
             current_chars = 0
-        current[key] = value
+        current[fid] = value
         current_chars += len(value)
     if current:
         chunks.append(current)
 
     resolved = await resolve_model(settings, model)
-    translations: dict[str, str] = {}
+    merged: dict[str, str] = {}
     for chunk in chunks:
         data = await complete_json(
             settings,
@@ -334,8 +343,9 @@ async def translate_spec(
             max_tokens=16000,
         )
         if isinstance(data, dict) and data:
-            translations.update({str(k): str(v) for k, v in data.items()})
+            merged.update({str(k): str(v) for k, v in data.items()})
 
+    translations = {key_map[fid]: v for fid, v in merged.items() if fid in key_map}
     if not translations:
         # Un-mask custom HTML before failing — never persist sentinels.
         for slide, originals, masks, sentinel_html in html_edits:
