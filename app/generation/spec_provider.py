@@ -504,6 +504,7 @@ class OnlineSpecProvider(SpecProvider):
         for candidate in _FALLBACK_MODELS:
             if candidate != model and (not ids or candidate in ids):
                 candidates.append(candidate)
+            if len(candidates) >= 3:
                 break
 
         last_error: Exception | None = None
@@ -619,6 +620,11 @@ class OnlineSpecProvider(SpecProvider):
                     raise ProviderError(
                         "The generation response was malformed"
                     ) from exc
+                if not content or not str(content).strip():
+                    # Free reasoning models sometimes answer with an EMPTY
+                    # content (the answer is lost in reasoning_content). Treat
+                    # as provider failure so the retry/fallback chain handles it.
+                    raise ProviderError("The model returned an empty response")
                 try:
                     parsed = _parse_spec(content)
                 except ProviderError as exc:

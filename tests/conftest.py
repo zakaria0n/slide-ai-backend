@@ -1,6 +1,8 @@
 """Shared pytest fixtures."""
 from __future__ import annotations
 
+import os
+
 import copy
 from dataclasses import dataclass, field
 from typing import Any
@@ -219,14 +221,16 @@ def client(tmp_path, fake_supabase) -> "TestClient":
     from app.core.config import Settings
     from app.main import create_app
 
+    # SLIDE_AI_TESTS_ONLINE=1 switches the AI providers to the REAL one
+    # (opencode zen, public key) for online integration tests. Default is
+    # the deterministic offline mode: fast and hermetic.
+    online = os.environ.get("SLIDE_AI_TESTS_ONLINE") == "1"
     settings = Settings(
         _env_file=None,
         app_env="test",
         cors_allowed_origins=["http://localhost:5173"],
         supabase_jwt_secret="test-secret",
-        # Hermetic tests: empty API key selects the deterministic offline
-        # providers — no network calls to the AI provider from the suite.
-        ai_provider_api_key="",
+        ai_provider_api_key="" if not online else "public",
     )
     app = create_app(settings)
     with TestClient(app) as c:
